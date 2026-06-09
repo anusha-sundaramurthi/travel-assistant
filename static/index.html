@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AI Travel Assistant</title>
+<style>
+  /* ── Tokens ─────────────────────────────────────── */
+  :root {
+    --sky:    #c8e6f5;
+    --ocean:  #0a6e9f;
+    --deep:   #04374f;
+    --deeper: #021e2c;
+    --sand:   #f2e9d8;
+    --amber:  #e8a040;
+    --foam:   #eaf6fb;
+    --ink:    #0d1b22;
+    --muted:  #5a8fa8;
+    --border: #1a4a63;
+    --radius: 14px;
+    --font-head: 'Georgia', serif;
+    --font-body: 'Segoe UI', system-ui, sans-serif;
+    --sidebar-w: 300px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: var(--font-body);
+    background: var(--deeper);
+    color: var(--sand);
+    height: 100dvh;
+    display: flex;
+    overflow: hidden;
+  }
+
+  /* ── Sidebar ─────────────────────────────────────── */
+  .sidebar {
+    width: var(--sidebar-w);
+    min-width: var(--sidebar-w);
+    background: var(--deep);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    padding: 20px 16px;
+    gap: 18px;
+    overflow-y: auto;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .logo-icon {
+    font-size: 28px;
+    line-height: 1;
+  }
+  .logo h1 {
+    font-family: var(--font-head);
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--sky);
+    line-height: 1.2;
+  }
+  .logo p {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+
+  .sidebar-section h3 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+
+  /* upload zone */
+  .upload-zone {
+    border: 1.5px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 18px 12px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+    background: var(--deeper);
+  }
+  .upload-zone:hover, .upload-zone.drag-over {
+    border-color: var(--ocean);
+    background: rgba(10,110,159,.08);
+  }
+  .upload-zone p { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .upload-zone .icon { font-size: 22px; }
+  #file-input { display: none; }
+
+  .file-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .file-item {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--deeper); border-radius: 8px;
+    padding: 6px 10px; font-size: 12px;
+  }
+  .file-item .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sand); }
+  .file-item .remove { cursor: pointer; color: var(--muted); font-size: 14px; }
+  .file-item .remove:hover { color: #e06060; }
+
+  /* buttons */
+  .btn {
+    width: 100%; padding: 9px 14px; border-radius: 9px;
+    border: none; cursor: pointer; font-size: 13px;
+    font-family: var(--font-body); font-weight: 600;
+    transition: opacity .15s, transform .1s;
+  }
+  .btn:hover { opacity: .88; transform: translateY(-1px); }
+  .btn:active { transform: translateY(0); }
+  .btn-primary  { background: var(--ocean); color: #fff; }
+  .btn-ghost    { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .btn-danger   { background: rgba(180,40,40,.18); color: #e06060; border: 1px solid rgba(180,40,40,.3); }
+  .btn-amber    { background: rgba(232,160,64,.15); color: var(--amber); border: 1px solid rgba(232,160,64,.3); }
+  .btn-row { display: flex; gap: 8px; }
+  .btn-row .btn { flex: 1; }
+
+  /* language select */
+  .select-wrap select {
+    width: 100%; padding: 8px 10px;
+    background: var(--deeper); color: var(--sand);
+    border: 1px solid var(--border); border-radius: 9px;
+    font-size: 13px; cursor: pointer; outline: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M0 0l6 8 6-8z' fill='%235a8fa8'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+  }
+
+  /* session badge */
+  .session-badge {
+    font-size: 10px; color: var(--muted);
+    padding: 4px 8px; background: var(--deeper);
+    border-radius: 6px; font-family: monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* ── Main area ────────────────────────────────────── */
+  .main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* top bar */
+  .topbar {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px;
+    background: var(--deep);
+  }
+  .topbar .title {
+    font-family: var(--font-head);
+    font-size: 18px; font-weight: 700; color: var(--sky);
+  }
+  .topbar .sub { font-size: 12px; color: var(--muted); margin-left: auto; }
+
+  /* help panel */
+  .help-panel {
+    display: none;
+    background: linear-gradient(135deg, #0a3d58, #04222f);
+    border: 1px solid var(--ocean);
+    border-radius: var(--radius);
+    padding: 20px 22px;
+    margin: 14px 16px 0;
+    font-size: 13px;
+    line-height: 1.65;
+  }
+  .help-panel.open { display: block; }
+  .help-panel h2 { font-size: 15px; color: var(--sky); margin-bottom: 14px; }
+  .help-panel h4 { font-size: 12px; color: #7ec8ff; text-transform: uppercase; letter-spacing: .06em; margin: 14px 0 6px; }
+  .help-panel ul { padding-left: 18px; color: var(--sand); }
+  .help-panel li { margin-bottom: 4px; }
+  .help-panel table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+  .help-panel th { text-align: left; color: #7ec8ff; padding: 5px 8px; background: rgba(255,255,255,.06); }
+  .help-panel td { padding: 5px 8px; color: var(--sand); }
+  .help-panel tr:nth-child(odd) td { background: rgba(255,255,255,.03); }
+  .help-close { float: right; cursor: pointer; color: var(--muted); font-size: 15px; margin-left: 10px; }
+
+  /* chat */
+  .chat-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px 20px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    scroll-behavior: smooth;
+  }
+
+  .bubble-row {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .bubble-row.user { flex-direction: row-reverse; }
+
+  .avatar {
+    width: 34px; height: 34px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; flex-shrink: 0;
+  }
+  .avatar.ai  { background: rgba(10,110,159,.25); }
+  .avatar.user-av { background: rgba(232,160,64,.2); }
+
+  .bubble {
+    max-width: 72%;
+    padding: 12px 16px;
+    border-radius: 16px;
+    font-size: 14px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+  }
+  .bubble.ai {
+    background: var(--deep);
+    border: 1px solid var(--border);
+    border-top-left-radius: 4px;
+    color: var(--sand);
+  }
+  .bubble.user {
+    background: var(--ocean);
+    color: #fff;
+    border-top-right-radius: 4px;
+  }
+  .bubble .rewrite-hint {
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--muted);
+    font-style: italic;
+  }
+  .bubble .source-note {
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--amber);
+    opacity: .85;
+  }
+
+  /* typing indicator */
+  .typing { display: flex; align-items: center; gap: 5px; padding: 14px 16px; }
+  .typing span {
+    width: 7px; height: 7px; background: var(--muted);
+    border-radius: 50%; animation: bounce 1s infinite;
+  }
+  .typing span:nth-child(2) { animation-delay: .15s; }
+  .typing span:nth-child(3) { animation-delay: .30s; }
+  @keyframes bounce {
+    0%, 80%, 100% { transform: translateY(0); opacity: .5; }
+    40% { transform: translateY(-5px); opacity: 1; }
+  }
+
+  /* input bar */
+  .input-bar {
+    padding: 14px 20px;
+    border-top: 1px solid var(--border);
+    background: var(--deep);
+    display: flex; gap: 10px; align-items: flex-end;
+  }
+  .input-wrap {
+    flex: 1;
+    background: var(--deeper);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    display: flex; align-items: flex-end;
+    transition: border-color .2s;
+  }
+  .input-wrap:focus-within { border-color: var(--ocean); }
+  #chat-input {
+    flex: 1; background: transparent; border: none; outline: none;
+    color: var(--sand); font-family: var(--font-body);
+    font-size: 14px; padding: 11px 14px; resize: none;
+    max-height: 140px; line-height: 1.5;
+  }
+  .send-btn {
+    width: 40px; height: 40px; border-radius: 10px;
+    background: var(--ocean); border: none; cursor: pointer;
+    color: #fff; font-size: 18px; display: flex;
+    align-items: center; justify-content: center;
+    transition: background .15s; flex-shrink: 0;
+  }
+  .send-btn:hover { background: #0b84be; }
+  .send-btn:disabled { background: var(--border); cursor: default; }
+
+  /* toast */
+  .toast {
+    position: fixed; bottom: 80px; right: 24px;
+    background: var(--deep); border: 1px solid var(--border);
+    color: var(--sand); padding: 10px 16px; border-radius: 10px;
+    font-size: 13px; animation: fadeup .25s ease;
+    z-index: 999; max-width: 280px;
+  }
+  .toast.success { border-color: #3aaa6a; color: #5dde96; }
+  .toast.error   { border-color: #c04040; color: #e07070; }
+  @keyframes fadeup {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* empty state */
+  .empty-state {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 16px; padding: 40px 20px;
+    text-align: center;
+  }
+  .empty-state .globe { font-size: 56px; opacity: .6; }
+  .empty-state h2 {
+    font-family: var(--font-head);
+    font-size: 22px; color: var(--sky);
+  }
+  .empty-state p { font-size: 13px; color: var(--muted); max-width: 380px; line-height: 1.6; }
+  .suggestion-chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 4px; }
+  .chip {
+    padding: 7px 14px; border-radius: 20px;
+    border: 1px solid var(--border); background: var(--deep);
+    font-size: 12px; color: var(--sky); cursor: pointer;
+    transition: background .15s;
+  }
+  .chip:hover { background: var(--border); }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<!-- ── Sidebar ───────────────────────────────────────── -->
+<aside class="sidebar">
+
+  <div class="logo">
+    <div class="logo-icon">🧭</div>
+    <div>
+      <h1>AI Travel<br>Assistant</h1>
+      <p>Powered by NVIDIA NIM</p>
+    </div>
+  </div>
+
+  <!-- Upload -->
+  <div class="sidebar-section">
+    <h3>📁 Upload Guides</h3>
+    <div class="upload-zone" id="upload-zone" onclick="document.getElementById('file-input').click()">
+      <div class="icon">📄</div>
+      <p>Click or drag PDFs here</p>
+    </div>
+    <input type="file" id="file-input" accept=".pdf" multiple />
+    <div class="file-list" id="file-list"></div>
+    <button class="btn btn-primary" id="process-btn" style="display:none;margin-top:8px" onclick="processFiles()">
+      ⚡ Process Guides
+    </button>
+  </div>
+
+  <hr style="border-color:var(--border)" />
+
+  <!-- Language -->
+  <div class="sidebar-section">
+    <h3>🌐 Language</h3>
+    <div class="select-wrap">
+      <select id="lang-select">
+        <option value="English">🇬🇧 English</option>
+        <option value="Tamil">🇮🇳 Tamil</option>
+        <option value="Hindi">🇮🇳 Hindi</option>
+        <option value="Telugu">🇮🇳 Telugu</option>
+        <option value="Malayalam">🇮🇳 Malayalam</option>
+        <option value="Kannada">🇮🇳 Kannada</option>
+        <option value="French">🇫🇷 French</option>
+        <option value="German">🇩🇪 German</option>
+        <option value="Spanish">🇪🇸 Spanish</option>
+        <option value="Japanese">🇯🇵 Japanese</option>
+        <option value="Chinese">🇨🇳 Chinese</option>
+        <option value="Arabic">🇦🇪 Arabic</option>
+      </select>
+    </div>
+  </div>
+
+  <hr style="border-color:var(--border)" />
+
+  <!-- Actions -->
+  <div class="sidebar-section">
+    <h3>⚙️ Actions</h3>
+    <div class="btn-row">
+      <button class="btn btn-ghost" onclick="clearChat()">🗑️ Clear Chat</button>
+      <button class="btn btn-danger" onclick="clearDB()">🗄️ Clear DB</button>
+    </div>
+    <button class="btn btn-amber" style="margin-top:8px" onclick="toggleHelp()">❓ How to Use</button>
+  </div>
+
+  <div style="margin-top:auto">
+    <div class="session-badge" id="session-display">Session: loading…</div>
+  </div>
+
+</aside>
+
+<!-- ── Main ──────────────────────────────────────────── -->
+<div class="main">
+
+  <div class="topbar">
+    <span class="title">🗺️ Travel Itinerary Assistant</span>
+    <span class="sub">Ask about any destination — upload guides for deeper answers</span>
+  </div>
+
+  <!-- Help panel -->
+  <div class="help-panel" id="help-panel">
+    <span class="help-close" onclick="toggleHelp()">✖</span>
+    <h2>❓ How to Use</h2>
+    <h4>📄 Uploading PDF Guides</h4>
+    <ul>
+      <li>Click <b>Upload Guides</b> in the sidebar or drag PDFs onto it.</li>
+      <li>Click <b>⚡ Process Guides</b> — wait for the ✅ toast.</li>
+    </ul>
+    <h4>💬 Asking Questions</h4>
+    <ul>
+      <li>Type your question in the chat box and hit <b>Enter</b> (Shift+Enter for newline).</li>
+      <li>Ask follow-ups like <i>"what about food there?"</i> — the AI understands context!</li>
+    </ul>
+    <h4>💾 PDF Memory</h4>
+    <ul>
+      <li>Uploaded PDFs are <b>stored permanently</b> in Qdrant — no need to re-upload next session.</li>
+      <li>Use <b>🗄️ Clear DB</b> only when you want to wipe all stored PDFs.</li>
+    </ul>
+    <h4>🗑️ Clear Chat vs 🗄️ Clear DB</h4>
+    <table>
+      <tr><th>Button</th><th>What it does</th><th>PDFs safe?</th></tr>
+      <tr><td>🗑️ Clear Chat</td><td>Clears chat messages only</td><td>✅ Yes</td></tr>
+      <tr><td>🗄️ Clear DB</td><td>Wipes ALL uploaded PDFs</td><td>❌ No</td></tr>
+    </table>
+  </div>
+
+  <!-- Chat messages -->
+  <div class="chat-area" id="chat-area">
+    <div class="empty-state" id="empty-state">
+      <div class="globe">🌍</div>
+      <h2>Where do you want to go?</h2>
+      <p>Upload travel guide PDFs from the sidebar, then ask me anything — itineraries, hotels, food, beaches, activities.</p>
+      <div class="suggestion-chips">
+        <div class="chip" onclick="sendChip(this)">Plan a 5-day trip to Bali</div>
+        <div class="chip" onclick="sendChip(this)">Best beaches in Thailand</div>
+        <div class="chip" onclick="sendChip(this)">Hotels in Paris under $150</div>
+        <div class="chip" onclick="sendChip(this)">Food guide for Tokyo</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Input bar -->
+  <div class="input-bar">
+    <div class="input-wrap">
+      <textarea id="chat-input" rows="1"
+        placeholder="Ask about any destination…"
+        onkeydown="handleKey(event)"
+        oninput="autoGrow(this)"></textarea>
+    </div>
+    <button class="send-btn" id="send-btn" onclick="sendMessage()">➤</button>
+  </div>
+
+</div>
+
+<script>
+// ── Config ───────────────────────────────────────────────
+const API = '';
+
+// ── State ────────────────────────────────────────────────
+let sessionId        = localStorage.getItem('travel_session') || crypto.randomUUID();
+let messages         = [];          // {role, content, rewrittenQuery, originalQuery}
+let pendingGenQuery  = null;
+let isLoading        = false;
+
+localStorage.setItem('travel_session', sessionId);
+document.getElementById('session-display').textContent =
+  'Session: ' + sessionId.slice(0, 8) + '…';
+
+// ── File handling ────────────────────────────────────────
+let filesToProcess = [];
+
+const uploadZone = document.getElementById('upload-zone');
+const fileInput  = document.getElementById('file-input');
+const fileList   = document.getElementById('file-list');
+const processBtn = document.getElementById('process-btn');
+
+uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
+uploadZone.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadZone.classList.remove('drag-over');
+  addFiles([...e.dataTransfer.files].filter(f => f.name.endsWith('.pdf')));
+});
+fileInput.addEventListener('change', () => {
+  addFiles([...fileInput.files]);
+  fileInput.value = '';
+});
+
+function addFiles(files) {
+  files.forEach(f => {
+    if (!filesToProcess.find(x => x.name === f.name)) filesToProcess.push(f);
+  });
+  renderFileList();
+}
+
+function renderFileList() {
+  fileList.innerHTML = filesToProcess.map((f, i) => `
+    <div class="file-item">
+      <span>📄</span>
+      <span class="fname" title="${f.name}">${f.name}</span>
+      <span class="remove" onclick="removeFile(${i})">✕</span>
+    </div>
+  `).join('');
+  processBtn.style.display = filesToProcess.length ? 'block' : 'none';
+}
+
+function removeFile(i) {
+  filesToProcess.splice(i, 1);
+  renderFileList();
+}
+
+async function processFiles() {
+  if (!filesToProcess.length) return;
+  processBtn.disabled = true;
+  processBtn.textContent = '⏳ Processing…';
+  let ok = 0, fail = 0;
+  for (const file of filesToProcess) {
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const r = await fetch(`${API}/upload`, { method: 'POST', body: fd });
+      if (r.ok) ok++; else fail++;
+    } catch { fail++; }
+  }
+  filesToProcess = [];
+  renderFileList();
+  processBtn.disabled = false;
+  processBtn.textContent = '⚡ Process Guides';
+  if (ok)   toast(`✅ ${ok} guide${ok>1?'s':''} processed`, 'success');
+  if (fail) toast(`❌ ${fail} file${fail>1?'s':''} failed`, 'error');
+}
+
+// ── Chat ─────────────────────────────────────────────────
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+
+function autoGrow(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 140) + 'px';
+}
+
+function sendChip(el) {
+  document.getElementById('chat-input').value = el.textContent;
+  sendMessage();
+}
+
+async function sendMessage() {
+  const input = document.getElementById('chat-input');
+  const text  = input.value.trim();
+  if (!text || isLoading) return;
+
+  input.value = '';
+  input.style.height = 'auto';
+
+  hideEmpty();
+  addBubble('user', text);
+
+  isLoading = true;
+  document.getElementById('send-btn').disabled = true;
+
+  // ── Pending YES/NO branch ─────────────────────────────
+  if (pendingGenQuery !== null) {
+    const originalQuery = pendingGenQuery;
+    pendingGenQuery     = null;
+    const YES_WORDS = ['yes','yeah','sure','ok','okay','yep','please','y',
+      'ஆம்','ஆமா','சரி','ஓகே','ஆமாம்','हाँ','हां','हा','जी','ठीक है',
+      'అవును','సరే','അതെ','ശരി','ഓക്കേ','ಹೌದು','ಸರಿ','oui','ouais',
+      'ja','sí','si','はい','うん','نعم','أجل','تمام'];
+    const said_yes = YES_WORDS.some(w => text.toLowerCase().includes(w));
+
+    if (said_yes) {
+      showTyping();
+      const data = await callAsk(originalQuery, true);
+      hideTyping();
+      if (data) addBubble('assistant', data.response, data.rewritten_query, originalQuery, true);
+    } else {
+      addBubble('assistant', 'No problem! Upload a PDF travel guide for this destination and I\'ll give you a detailed answer from it. 🗺️');
+    }
+    isLoading = false;
+    document.getElementById('send-btn').disabled = false;
+    return;
+  }
+
+  // ── Normal query ──────────────────────────────────────
+  showTyping();
+  const data = await callAsk(text, false);
+  hideTyping();
+
+  if (data) {
+    if (data.response === null) {
+      pendingGenQuery = text;
+      addBubble('assistant',
+        "I don't have a PDF travel guide for this destination.\n\n" +
+        "Would you like me to answer based on my **general knowledge**? *(yes / no)*\n\n" +
+        "⚠️ Reply with yes or no to continue.");
+    } else {
+      addBubble('assistant', data.response, data.rewritten_query, text);
+    }
+  } else {
+    addBubble('assistant', '⚠️ Could not reach the server. Make sure the FastAPI backend is running on port 8000.');
+  }
+
+  isLoading = false;
+  document.getElementById('send-btn').disabled = false;
+}
+
+async function callAsk(query, useGeneral) {
+  const lang = document.getElementById('lang-select').value;
+  try {
+    const r = await fetch(`${API}/ask`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, session_id: sessionId, use_general: useGeneral, language: lang })
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
+// ── Render ────────────────────────────────────────────────
+function hideEmpty() {
+  const es = document.getElementById('empty-state');
+  if (es) es.remove();
+}
+
+function addBubble(role, content, rewrittenQuery, originalQuery, isGeneralKnowledge) {
+  const area = document.getElementById('chat-area');
+  const row  = document.createElement('div');
+  row.className = 'bubble-row ' + (role === 'user' ? 'user' : '');
+
+  const avatar = document.createElement('div');
+  avatar.className = 'avatar ' + (role === 'user' ? 'user-av' : 'ai');
+  avatar.textContent = role === 'user' ? '🧑' : '🤖';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble ' + role;
+  // Render markdown-like bold & bullets simply
+  bubble.innerHTML = renderSimpleMarkdown(content);
+
+  if (rewrittenQuery && originalQuery && rewrittenQuery.toLowerCase() !== originalQuery.toLowerCase()) {
+    const hint = document.createElement('div');
+    hint.className = 'rewrite-hint';
+    hint.textContent = '🔍 Searched as: "' + rewrittenQuery + '"';
+    bubble.appendChild(hint);
+  }
+  if (isGeneralKnowledge) {
+    const note = document.createElement('div');
+    note.className = 'source-note';
+    note.textContent = 'ℹ️ Answered from general knowledge — upload a PDF for guide-based answers.';
+    bubble.appendChild(note);
+  }
+
+  if (role === 'user') { row.appendChild(bubble); row.appendChild(avatar); }
+  else                  { row.appendChild(avatar); row.appendChild(bubble); }
+
+  area.appendChild(row);
+  area.scrollTop = area.scrollHeight;
+}
+
+function renderSimpleMarkdown(text) {
+  return text
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/^(📅 .+)$/gm, '<br><strong style="color:var(--sky)">$1</strong>')
+    .replace(/^- (.+)$/gm, '&nbsp;&nbsp;• $1')
+    .replace(/\n/g, '<br>');
+}
+
+let typingEl = null;
+function showTyping() {
+  const area = document.getElementById('chat-area');
+  typingEl = document.createElement('div');
+  typingEl.className = 'bubble-row';
+  typingEl.innerHTML = `
+    <div class="avatar ai">🤖</div>
+    <div class="bubble ai typing"><span></span><span></span><span></span></div>`;
+  area.appendChild(typingEl);
+  area.scrollTop = area.scrollHeight;
+}
+function hideTyping() {
+  if (typingEl) { typingEl.remove(); typingEl = null; }
+}
+
+// ── Sidebar actions ───────────────────────────────────────
+async function clearChat() {
+  try {
+    await fetch(`${API}/clear?session_id=${sessionId}`, { method: 'POST' });
+  } catch {}
+  const area = document.getElementById('chat-area');
+  area.innerHTML = `
+    <div class="empty-state" id="empty-state">
+      <div class="globe">🌍</div>
+      <h2>Where do you want to go?</h2>
+      <p>Upload travel guide PDFs from the sidebar, then ask me anything.</p>
+      <div class="suggestion-chips">
+        <div class="chip" onclick="sendChip(this)">Plan a 5-day trip to Bali</div>
+        <div class="chip" onclick="sendChip(this)">Best beaches in Thailand</div>
+        <div class="chip" onclick="sendChip(this)">Hotels in Paris under $150</div>
+        <div class="chip" onclick="sendChip(this)">Food guide for Tokyo</div>
+      </div>
+    </div>`;
+  pendingGenQuery = null;
+  toast('Chat cleared', 'success');
+}
+
+async function clearDB() {
+  if (!confirm('This will wipe ALL uploaded PDF guides from the database. Continue?')) return;
+  try {
+    const r = await fetch(`${API}/clear-db`, { method: 'POST' });
+    if (r.ok) toast('✅ Database cleared — re-upload your PDFs', 'success');
+    else toast('❌ Failed to clear database', 'error');
+  } catch { toast('❌ Server unreachable', 'error'); }
+}
+
+function toggleHelp() {
+  document.getElementById('help-panel').classList.toggle('open');
+}
+
+// ── Toast ─────────────────────────────────────────────────
+function toast(msg, type = '') {
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+</script>
+</body>
+</html>

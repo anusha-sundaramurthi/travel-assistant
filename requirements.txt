@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+aiofiles 
+python-dotenv
+python-multipart
+qdrant-client
+langchain-core
+langchain-text-splitters
+openai>=1.30.0
+pymupdf
+pydantic
+pyyaml
