@@ -1,10 +1,12 @@
 from fastapi import FastAPI, UploadFile
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from src.ingest import ingest_pdf
 from src.vectorstores import init_qdrant, clear_qdrant
 from src.generator import generate_answer, clear_memory
-from fastapi.middleware.cors import CORSMiddleware
 
 
 @asynccontextmanager
