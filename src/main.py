@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from src.ingest import ingest_pdf
 from src.vectorstores import init_qdrant, clear_qdrant
 from src.generator import generate_answer, clear_memory
+from fastapi.middleware.cors import CORSMiddleware
 
 
 @asynccontextmanager
