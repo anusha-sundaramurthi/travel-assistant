@@ -8,14 +8,16 @@ from langchain_openai import ChatOpenAI
 
 from src.retriever import retrieve_docs
 from src.config import MODEL_PROVIDER, OPENAI_API_KEY
+from openai import OpenAI
+import os
 
 # ── 1. Build the LLM ─────────────────────────────────────
 if MODEL_PROVIDER == "openai":
-    llm = ChatOpenAI(
-        api_key=OPENAI_API_KEY,
-        model_name="gpt-3.5-turbo",
-        temperature=0.7
-    )
+    llm = OpenAI(
+        api_key=os.getenv("GROQ_API_KEY"),
+        base_url="https://api.groq.com/openai/v1",
+        model_name="llama-3.3-70b-versatile",
+        temperature=0.7)
 else:
     raise ValueError(f"Unknown MODEL_PROVIDER: {MODEL_PROVIDER}")
 
