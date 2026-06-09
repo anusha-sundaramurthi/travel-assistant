@@ -13,7 +13,7 @@ import os
 
 # ── 1. Build the LLM ─────────────────────────────────────
 if MODEL_PROVIDER == "openai":
-    llm = OpenAI(
+    llm = ChatOpenAI(
         api_key=os.getenv("GROQ_API_KEY"),
         base_url="https://api.groq.com/openai/v1",
         model_name="llama-3.3-70b-versatile",
@@ -71,7 +71,10 @@ rewrite_prompt = ChatPromptTemplate.from_messages([
 ])
 
 if MODEL_PROVIDER == "openai":
-    rewrite_llm = ChatOpenAI(api_key=OPENAI_API_KEY, model_name="gpt-3.5-turbo", temperature=0)
+    rewrite_llm = ChatOpenAI(api_key=os.getenv("GROQ_API_KEY"),
+    base_url="https://api.groq.com/openai/v1",
+    model_name="llama-3.3-70b-versatile",
+    temperature=0)
 else:
     rewrite_llm = llm
 
