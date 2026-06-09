@@ -3,8 +3,8 @@ from src.embeddings import get_query_embedding   # ← uses input_type='query'
 from src.config import COLLECTION_NAME
 from src.vectorstores import get_qdrant_client
 
-TOP_SCORE_THRESHOLD = 0.60
-MIN_CHUNK_SCORE     = 0.60
+TOP_SCORE_THRESHOLD = 0.50
+MIN_CHUNK_SCORE     = 0.50
 
 
 def normalize_query(query: str) -> str:
