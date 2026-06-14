@@ -99,8 +99,6 @@ def rewrite_query(raw_query: str, chat_history_text: str) -> str:
     print(f"[QueryRewriter] Result: '{rewritten}'")
     return rewritten
 
-context_block = f"\nBUSINESS CONTEXT:\n{business_context}\n" 
-
 
 # ── 5. Prompts (REMOVED MORNING/AFTERNOON/EVENING FORMAT) ─
 PDF_ANSWER_SYSTEM_PROMPT = """You are an expert and friendly AI Travel Assistant.
@@ -346,6 +344,7 @@ def generate_answer(
     # ── Path B: PDF retrieval ─────────────────────────────
     docs    = retrieve_docs(rewritten_query)
     context = "\n".join(docs)
+    context_block = f"\nBUSINESS CONTEXT:\n{business_context}\n" if business_context else ""
 
     if not context.strip():
         print(f"[Generator] No PDF context for: '{original_query}' → asking user")
