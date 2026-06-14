@@ -1,370 +1,400 @@
-/**
- * Bot Studio Widget
- * Embed: <script src="https://yourapp.onrender.com/static/widget.js"
- *           data-bot-id="bot_abc123"
- *           data-api-key="ak_xyz789"></script>
- */
 (function () {
-  // ── Read embed attributes ──────────────────────────────
-  const scriptTag = document.currentScript ||
-    [...document.querySelectorAll('script[data-bot-id]')].pop();
+  "use strict";
 
-  const BOT_ID  = scriptTag?.getAttribute('data-bot-id');
-  const API_KEY = scriptTag?.getAttribute('data-api-key');
-  const BASE    = (() => {
-    const src = scriptTag?.src || '';
-    return src.replace('/static/widget.js', '');
+  // ── Read config from script tag ───────────────────────
+  const script = document.currentScript || (function () {
+    const scripts = document.getElementsByTagName("script");
+    return scripts[scripts.length - 1];
   })();
 
-  if (!BOT_ID || !API_KEY) {
-    console.error('[BotWidget] Missing data-bot-id or data-api-key');
+  const WIDGET_ID   = script.getAttribute("data-widget-id") || "";
+  const API_URL     = (script.getAttribute("data-api") || "").replace(/\/$/, "");
+  const TITLE       = script.getAttribute("data-title")       || "AI Assistant";
+  const COLOR       = script.getAttribute("data-color")       || "#4a9eff";
+  const WELCOME     = script.getAttribute("data-welcome")     || "Hi! How can I help you today?";
+  const LANGUAGE    = script.getAttribute("data-language")    || "English";
+  const PLACEHOLDER = script.getAttribute("data-placeholder") || "Ask me anything...";
+  const POSITION    = script.getAttribute("data-position")    || "right";
+
+  if (!WIDGET_ID || !API_URL) {
+    console.error("[AI Widget] Missing data-widget-id or data-api attribute.");
     return;
   }
 
-  // ── State ──────────────────────────────────────────────
-  const SESSION_ID     = 'ws_' + Math.random().toString(36).slice(2, 10);
-  let   isOpen         = false;
-  let   isLoading      = false;
-  let   pendingGeneral = null;
-  let   botConfig      = null;
+  // ── Session ───────────────────────────────────────────
+  const SESSION_ID = "aiw_" + Math.random().toString(36).substr(2, 9);
 
-  // ── Styles ─────────────────────────────────────────────
-  const style = document.createElement('style');
-  style.textContent = `
-    #bw-fab {
-      position:fixed;bottom:24px;right:24px;width:56px;height:56px;
-      border-radius:50%;border:none;cursor:pointer;
-      box-shadow:0 4px 20px rgba(0,0,0,.35);
-      display:flex;align-items:center;justify-content:center;
-      font-size:24px;z-index:9998;transition:transform .2s;
-    }
-    #bw-fab:hover { transform:scale(1.08); }
+  // ── State ─────────────────────────────────────────────
+  let isOpen              = false;
+  let isTyping            = false;
+  let pendingGeneralQuery = null;
+  let messages            = [];
 
-    #bw-panel {
-      position:fixed;bottom:92px;right:24px;
-      width:360px;height:520px;max-height:80vh;
-      background:#0d1117;border-radius:16px;
-      box-shadow:0 8px 40px rgba(0,0,0,.5);
-      display:flex;flex-direction:column;
-      z-index:9999;overflow:hidden;
-      font-family:'Segoe UI',system-ui,sans-serif;
-      transition:opacity .2s, transform .2s;
-      opacity:0;transform:translateY(12px) scale(.97);pointer-events:none;
-    }
-    #bw-panel.open { opacity:1;transform:translateY(0) scale(1);pointer-events:all; }
+  // ── Helpers ───────────────────────────────────────────
+  function hexToRgba(hex, alpha) {
+    const num = parseInt(hex.replace("#", ""), 16);
+    return `rgba(${(num >> 16) & 255},${(num >> 8) & 255},${num & 255},${alpha})`;
+  }
 
-    #bw-header {
-      display:flex;align-items:center;gap:10px;
-      padding:14px 16px;flex-shrink:0;
-    }
-    #bw-avatar {
-      width:36px;height:36px;border-radius:50%;
-      background:rgba(255,255,255,.15);
-      display:flex;align-items:center;justify-content:center;font-size:18px;
-    }
-    #bw-title { font-weight:700;font-size:15px;color:#e6edf3;flex:1; }
-    #bw-close {
-      background:transparent;border:none;color:rgba(255,255,255,.6);
-      cursor:pointer;font-size:18px;padding:4px;border-radius:6px;
-    }
-    #bw-close:hover { background:rgba(255,255,255,.1); }
+  function escapeHtml(text) {
+    const d = document.createElement("div");
+    d.textContent = text;
+    return d.innerHTML;
+  }
 
-    #bw-messages {
-      flex:1;overflow-y:auto;padding:12px 14px;
-      display:flex;flex-direction:column;gap:10px;
-      scroll-behavior:smooth;
-    }
-    #bw-messages::-webkit-scrollbar { width:4px; }
-    #bw-messages::-webkit-scrollbar-thumb { background:#30363d;border-radius:2px; }
+  function formatMessage(text) {
+    return escapeHtml(text)
+      .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*(.*?)\*/g,     "<em>$1</em>")
+      .replace(/^### (.+)$/gm,  '<p class="aiw-h3">$1</p>')
+      .replace(/^## (.+)$/gm,   '<p class="aiw-h2">$1</p>')
+      .replace(/^# (.+)$/gm,    '<p class="aiw-h1">$1</p>')
+      .replace(/^- (.+)$/gm,    "<li>$1</li>")
+      .replace(/^(\d+)\. (.+)$/gm, "<li>$2</li>")
+      .replace(/(<li>[\s\S]*?<\/li>)/g, '<ul class="aiw-list">$1</ul>')
+      .replace(/\n\n/g, '</p><p class="aiw-para">')
+      .replace(/\n/g,   "<br>");
+  }
 
-    .bw-msg { display:flex;gap:8px;align-items:flex-start; }
-    .bw-msg.user { flex-direction:row-reverse; }
+  function getTime() {
+    return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
 
-    .bw-av {
-      width:28px;height:28px;border-radius:50%;flex-shrink:0;
-      display:flex;align-items:center;justify-content:center;font-size:13px;
-    }
-    .bw-av.bot  { background:rgba(255,255,255,.1); }
-    .bw-av.user { background:rgba(255,255,255,.15); }
+  // ── Styles ────────────────────────────────────────────
+  const css = `
+    #aiw-wrap * { box-sizing:border-box; margin:0; padding:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
 
-    .bw-bubble {
-      max-width:80%;padding:9px 13px;border-radius:14px;
-      font-size:13px;line-height:1.65;white-space:pre-wrap;
+    #aiw-bubble {
+      position:fixed; ${POSITION==="left"?"left:24px;":"right:24px;"} bottom:24px;
+      width:56px; height:56px; border-radius:50%;
+      background:${COLOR};
+      box-shadow:0 4px 20px ${hexToRgba(COLOR, 0.45)};
+      cursor:pointer; border:none; outline:none;
+      display:flex; align-items:center; justify-content:center;
+      z-index:999999; transition:transform .2s ease, box-shadow .2s ease;
     }
-    .bw-bubble.bot  { background:#1c2128;color:#e6edf3;border-top-left-radius:4px; }
-    .bw-bubble.user { color:#fff;border-top-right-radius:4px; }
-    .bw-bubble.error { background:#3a1a1a;color:#ff7b72; }
-    .bw-rewrite { font-size:11px;color:#8b949e;margin-top:5px;font-style:italic; }
-    .bw-general-note { font-size:11px;margin-top:5px;opacity:.75; }
-
-    .bw-typing { display:flex;align-items:center;gap:4px;padding:10px 13px; }
-    .bw-typing span {
-      width:6px;height:6px;border-radius:50%;background:#8b949e;
-      animation:bwbounce 1s infinite;
-    }
-    .bw-typing span:nth-child(2){animation-delay:.15s;}
-    .bw-typing span:nth-child(3){animation-delay:.3s;}
-    @keyframes bwbounce {
-      0%,80%,100%{transform:translateY(0);opacity:.5;}
-      40%{transform:translateY(-5px);opacity:1;}
+    #aiw-bubble:hover { transform:scale(1.08); box-shadow:0 6px 28px ${hexToRgba(COLOR, 0.55)}; }
+    #aiw-bubble svg { width:26px; height:26px; fill:white; }
+    #aiw-badge {
+      position:absolute; top:-2px; right:-2px;
+      width:14px; height:14px; background:#ff4757;
+      border-radius:50%; border:2px solid white; display:none;
     }
 
-    #bw-input-bar {
-      padding:10px 12px;border-top:1px solid #21262d;
-      display:flex;gap:8px;align-items:flex-end;flex-shrink:0;
+    #aiw-panel {
+      position:fixed; ${POSITION==="left"?"left:24px;":"right:24px;"} bottom:92px;
+      width:370px; max-width:calc(100vw - 32px);
+      height:560px; max-height:calc(100vh - 120px);
+      background:#fff; border-radius:20px;
+      box-shadow:0 12px 48px rgba(0,0,0,.15), 0 2px 8px rgba(0,0,0,.08);
+      display:flex; flex-direction:column; overflow:hidden;
+      z-index:999998; opacity:0; transform:translateY(16px) scale(.97);
+      pointer-events:none; transition:opacity .25s ease, transform .25s ease;
     }
-    #bw-input {
-      flex:1;background:#161b22;border:1px solid #30363d;
-      color:#e6edf3;border-radius:10px;padding:8px 12px;
-      font-size:13px;font-family:inherit;resize:none;
-      outline:none;max-height:100px;line-height:1.5;
-    }
-    #bw-input:focus { border-color:#1f6feb; }
-    #bw-send {
-      width:36px;height:36px;border-radius:9px;border:none;
-      cursor:pointer;font-size:16px;flex-shrink:0;
-      display:flex;align-items:center;justify-content:center;
-      transition:opacity .15s;
-    }
-    #bw-send:disabled { opacity:.4;cursor:default; }
+    #aiw-panel.aiw-open { opacity:1; transform:translateY(0) scale(1); pointer-events:all; }
 
-    #bw-powered {
-      text-align:center;font-size:10px;color:#484f58;
-      padding:6px;flex-shrink:0;
+    #aiw-header {
+      background:${COLOR}; padding:16px 18px;
+      display:flex; align-items:center; gap:12px; flex-shrink:0;
     }
+    #aiw-hav {
+      width:36px; height:36px; border-radius:50%;
+      background:rgba(255,255,255,.25);
+      display:flex; align-items:center; justify-content:center; flex-shrink:0;
+    }
+    #aiw-hav svg { width:20px; height:20px; fill:white; }
+    #aiw-hinfo { flex:1; }
+    #aiw-htitle { color:white; font-size:15px; font-weight:600; line-height:1.2; }
+    #aiw-hstatus { color:rgba(255,255,255,.8); font-size:12px; margin-top:2px; display:flex; align-items:center; gap:4px; }
+    #aiw-dot { width:7px; height:7px; border-radius:50%; background:#4ade80; display:inline-block; }
+    #aiw-xbtn {
+      background:rgba(255,255,255,.2); border:none; border-radius:50%;
+      width:30px; height:30px; cursor:pointer;
+      display:flex; align-items:center; justify-content:center;
+      color:white; font-size:16px; transition:background .15s; flex-shrink:0;
+    }
+    #aiw-xbtn:hover { background:rgba(255,255,255,.3); }
 
-    @media(max-width:420px){
-      #bw-panel{width:calc(100vw - 24px);right:12px;bottom:84px;}
-      #bw-fab{right:12px;bottom:12px;}
+    #aiw-msgs {
+      flex:1; overflow-y:auto; padding:16px;
+      display:flex; flex-direction:column; gap:12px; scroll-behavior:smooth;
+    }
+    #aiw-msgs::-webkit-scrollbar { width:4px; }
+    #aiw-msgs::-webkit-scrollbar-thumb { background:#e0e0e0; border-radius:4px; }
+
+    .aiw-msg { display:flex; flex-direction:column; max-width:85%; animation:aiw-fi .2s ease; }
+    .aiw-bot  { align-self:flex-start; }
+    .aiw-user { align-self:flex-end; }
+
+    .aiw-bub {
+      padding:10px 14px; border-radius:16px;
+      font-size:14px; line-height:1.55; color:#1a1a1a;
+    }
+    .aiw-bot  .aiw-bub { background:#f4f4f5; border-bottom-left-radius:4px; }
+    .aiw-user .aiw-bub { background:${COLOR}; color:white; border-bottom-right-radius:4px; }
+    .aiw-time { font-size:11px; color:#aaa; margin-top:4px; padding:0 4px; }
+    .aiw-bot  .aiw-time { align-self:flex-start; }
+    .aiw-user .aiw-time { align-self:flex-end; }
+
+    .aiw-list { padding-left:18px; margin:6px 0; }
+    .aiw-list li { margin-bottom:4px; }
+    .aiw-para { margin-bottom:6px; }
+    .aiw-h1 { font-size:15px; font-weight:700; margin-bottom:6px; }
+    .aiw-h2 { font-size:14px; font-weight:700; margin-bottom:4px; }
+    .aiw-h3 { font-size:13px; font-weight:600; margin-bottom:4px; }
+
+    .aiw-typing {
+      display:flex; align-items:center; gap:5px;
+      padding:12px 14px; background:#f4f4f5;
+      border-radius:16px; border-bottom-left-radius:4px; width:fit-content;
+    }
+    .aiw-d {
+      width:7px; height:7px; border-radius:50%; background:#999;
+      animation:aiw-b 1.2s infinite;
+    }
+    .aiw-d:nth-child(2) { animation-delay:.2s; }
+    .aiw-d:nth-child(3) { animation-delay:.4s; }
+
+    .aiw-cfm-btns { display:flex; gap:8px; margin-top:8px; }
+    .aiw-cfm-btn {
+      padding:7px 16px; border-radius:20px; border:none;
+      font-size:13px; font-weight:500; cursor:pointer; transition:opacity .15s;
+    }
+    .aiw-cfm-btn:hover { opacity:.85; }
+    .aiw-cfm-yes { background:${COLOR}; color:white; }
+    .aiw-cfm-no  { background:#f0f0f0; color:#555; }
+    .aiw-cfm-btn:disabled { opacity:.5; cursor:not-allowed; }
+
+    #aiw-footer { padding:12px 14px; border-top:1px solid #f0f0f0; flex-shrink:0; }
+    #aiw-irow   { display:flex; gap:8px; align-items:flex-end; }
+    #aiw-input  {
+      flex:1; border:1.5px solid #e8e8e8; border-radius:22px;
+      padding:10px 16px; font-size:14px; outline:none; resize:none;
+      max-height:100px; line-height:1.4; color:#1a1a1a; background:#fafafa;
+      transition:border-color .15s; font-family:inherit;
+    }
+    #aiw-input:focus { border-color:${COLOR}; background:white; }
+    #aiw-input::placeholder { color:#bbb; }
+    #aiw-send {
+      width:40px; height:40px; border-radius:50%;
+      background:${COLOR}; border:none; cursor:pointer;
+      display:flex; align-items:center; justify-content:center;
+      flex-shrink:0; transition:opacity .15s, transform .15s;
+    }
+    #aiw-send:hover   { opacity:.88; transform:scale(1.05); }
+    #aiw-send:disabled { opacity:.45; cursor:not-allowed; transform:none; }
+    #aiw-send svg { width:18px; height:18px; fill:white; }
+
+    #aiw-powered { text-align:center; font-size:11px; color:#ccc; margin-top:8px; }
+
+    @keyframes aiw-b  { 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-5px)} }
+    @keyframes aiw-fi { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+
+    @media(max-width:420px) {
+      #aiw-panel { width:calc(100vw - 32px); ${POSITION==="left"?"left:16px;":"right:16px;"} }
     }
   `;
-  document.head.appendChild(style);
 
-  // ── Create elements ────────────────────────────────────
-  const fab   = document.createElement('button');
-  fab.id      = 'bw-fab';
-  fab.title   = 'Chat';
-  fab.textContent = '💬';
+  const styleEl = document.createElement("style");
+  styleEl.textContent = css;
+  document.head.appendChild(styleEl);
 
-  const panel = document.createElement('div');
-  panel.id    = 'bw-panel';
-  panel.innerHTML = `
-    <div id="bw-header">
-      <div id="bw-avatar">🤖</div>
-      <div id="bw-title">AI Assistant</div>
-      <button id="bw-close" title="Close">✕</button>
+  // ── Build DOM ─────────────────────────────────────────
+  const wrap = document.createElement("div");
+  wrap.id    = "aiw-wrap";
+  wrap.innerHTML = `
+    <button id="aiw-bubble" aria-label="Open chat">
+      <svg viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2.05 21.5l4.518-1.374A9.953 9.953 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2zm0 18a7.95 7.95 0 01-4.073-1.117l-.292-.174-3.024.92.938-2.94-.19-.302A7.96 7.96 0 014 12c0-4.411 3.589-8 8-8s8 3.589 8 8-3.589 8-8 8z"/></svg>
+      <div id="aiw-badge"></div>
+    </button>
+
+    <div id="aiw-panel" role="dialog" aria-label="${escapeHtml(TITLE)}">
+      <div id="aiw-header">
+        <div id="aiw-hav">
+          <svg viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2.05 21.5l4.518-1.374A9.953 9.953 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2z"/></svg>
+        </div>
+        <div id="aiw-hinfo">
+          <div id="aiw-htitle">${escapeHtml(TITLE)}</div>
+          <div id="aiw-hstatus"><span id="aiw-dot"></span> Online</div>
+        </div>
+        <button id="aiw-xbtn" aria-label="Close">✕</button>
+      </div>
+
+      <div id="aiw-msgs"></div>
+
+      <div id="aiw-footer">
+        <div id="aiw-irow">
+          <textarea id="aiw-input" rows="1" placeholder="${escapeHtml(PLACEHOLDER)}" aria-label="Message"></textarea>
+          <button id="aiw-send" aria-label="Send">
+            <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+          </button>
+        </div>
+        <div id="aiw-powered">Powered by AI Widget</div>
+      </div>
     </div>
-    <div id="bw-messages"></div>
-    <div id="bw-input-bar">
-      <textarea id="bw-input" rows="1" placeholder="Ask me anything…"></textarea>
-      <button id="bw-send">➤</button>
-    </div>
-    <div id="bw-powered">Powered by Bot Studio</div>
   `;
+  document.body.appendChild(wrap);
 
-  document.body.appendChild(fab);
-  document.body.appendChild(panel);
+  // ── Refs ──────────────────────────────────────────────
+  const bubble   = document.getElementById("aiw-bubble");
+  const panel    = document.getElementById("aiw-panel");
+  const xbtn     = document.getElementById("aiw-xbtn");
+  const msgsEl   = document.getElementById("aiw-msgs");
+  const inputEl  = document.getElementById("aiw-input");
+  const sendBtn  = document.getElementById("aiw-send");
+  const badge    = document.getElementById("aiw-badge");
 
-  // ── Load bot config ────────────────────────────────────
-  async function loadConfig() {
-    try {
-      const res  = await fetch(`${BASE}/widget/config/${BOT_ID}?api_key=${API_KEY}`);
-      const data = await res.json();
+  // ── Open / Close ──────────────────────────────────────
+  function openPanel() {
+    isOpen = true;
+    panel.classList.add("aiw-open");
+    badge.style.display = "none";
+    inputEl.focus();
+    if (messages.length === 0) addBot(WELCOME);
+  }
+  function closePanel() {
+    isOpen = false;
+    panel.classList.remove("aiw-open");
+  }
 
-      if (data.error) {
-        showSystemMsg('⚠️ ' + data.error);
-        return;
-      }
+  bubble.addEventListener("click", () => isOpen ? closePanel() : openPanel());
+  xbtn.addEventListener("click", closePanel);
 
-      botConfig = data;
-      document.getElementById('bw-title').textContent = data.name;
-      fab.style.background    = data.primary_color;
-      document.getElementById('bw-send').style.background = data.primary_color;
+  // ── Add messages ──────────────────────────────────────
+  function addBot(text, withConfirm) {
+    messages.push({ role: "bot", text });
+    const el = document.createElement("div");
+    el.className = "aiw-msg aiw-bot";
+    el.innerHTML = `
+      <div class="aiw-bub">${formatMessage(text)}</div>
+      ${withConfirm ? `
+        <div class="aiw-cfm-btns">
+          <button class="aiw-cfm-btn aiw-cfm-yes" data-ans="yes">Yes, please</button>
+          <button class="aiw-cfm-btn aiw-cfm-no"  data-ans="no">No thanks</button>
+        </div>` : ""}
+      <div class="aiw-time">${getTime()}</div>`;
 
-      // Welcome message
-      appendMsg('bot', data.welcome_message);
-    } catch (e) {
-      showSystemMsg('⚠️ Could not connect to assistant.');
+    if (withConfirm) {
+      el.querySelectorAll(".aiw-cfm-btn").forEach(btn => {
+        btn.addEventListener("click", function () {
+          el.querySelectorAll(".aiw-cfm-btn").forEach(b => { b.disabled = true; });
+          handleConfirm(this.getAttribute("data-ans"));
+        });
+      });
+    }
+
+    msgsEl.appendChild(el);
+    scrollBottom();
+    if (!isOpen) badge.style.display = "block";
+  }
+
+  function addUser(text) {
+    messages.push({ role: "user", text });
+    const el = document.createElement("div");
+    el.className = "aiw-msg aiw-user";
+    el.innerHTML = `
+      <div class="aiw-bub">${escapeHtml(text)}</div>
+      <div class="aiw-time">${getTime()}</div>`;
+    msgsEl.appendChild(el);
+    scrollBottom();
+  }
+
+  function showTyping() {
+    const el = document.createElement("div");
+    el.className = "aiw-msg aiw-bot"; el.id = "aiw-typing";
+    el.innerHTML = `<div class="aiw-typing"><div class="aiw-d"></div><div class="aiw-d"></div><div class="aiw-d"></div></div>`;
+    msgsEl.appendChild(el); scrollBottom();
+  }
+  function hideTyping() { const el = document.getElementById("aiw-typing"); if (el) el.remove(); }
+  function scrollBottom() { msgsEl.scrollTop = msgsEl.scrollHeight; }
+
+  // ── API call ──────────────────────────────────────────
+  async function callAsk(query, useGeneral) {
+    const res = await fetch(API_URL + "/ask", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({
+        query,
+        session_id:  SESSION_ID,
+        widget_id:   WIDGET_ID,
+        language:    LANGUAGE,
+        use_general: useGeneral || false
+      })
+    });
+    if (!res.ok) throw new Error("Server error " + res.status);
+    return res.json();
+  }
+
+  // ── Handle yes/no confirm ─────────────────────────────
+  async function handleConfirm(answer) {
+    if (!pendingGeneralQuery) return;
+    const query = pendingGeneralQuery;
+    pendingGeneralQuery = null;
+
+    if (answer === "yes") {
+      showTyping(); setDisabled(true);
+      try {
+        const data = await callAsk(query, true);
+        hideTyping();
+        addBot(data.response || "I couldn't find an answer. Please try rephrasing.");
+      } catch {
+        hideTyping();
+        addBot("Something went wrong. Please try again.");
+      } finally { setDisabled(false); }
+    } else {
+      addBot("No problem! Feel free to ask me anything else.");
     }
   }
 
-  // ── Toggle panel ───────────────────────────────────────
-  fab.addEventListener('click', () => {
-    isOpen = !isOpen;
-    panel.classList.toggle('open', isOpen);
-    fab.textContent = isOpen ? '✕' : '💬';
-    if (isOpen) {
-      scrollBottom();
-      document.getElementById('bw-input').focus();
-    }
-  });
-
-  document.getElementById('bw-close').addEventListener('click', () => {
-    isOpen = false;
-    panel.classList.remove('open');
-    fab.textContent = '💬';
-  });
-
-  // ── Input ──────────────────────────────────────────────
-  const inputEl = document.getElementById('bw-input');
-  const sendBtn = document.getElementById('bw-send');
-
-  inputEl.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-  });
-  inputEl.addEventListener('input', () => {
-    inputEl.style.height = 'auto';
-    inputEl.style.height = Math.min(inputEl.scrollHeight, 100) + 'px';
-  });
-  sendBtn.addEventListener('click', send);
-
-  // ── Send ───────────────────────────────────────────────
+  // ── Send ──────────────────────────────────────────────
   async function send() {
     const text = inputEl.value.trim();
-    if (!text || isLoading) return;
+    if (!text || isTyping) return;
 
-    inputEl.value = '';
-    inputEl.style.height = 'auto';
-    appendMsg('user', text);
+    addUser(text);
+    inputEl.value = ""; autoResize();
 
-    // Pending yes/no for general knowledge
-    if (pendingGeneral !== null) {
-      const orig = pendingGeneral;
-      pendingGeneral = null;
-      const YES = ['yes','yeah','sure','ok','okay','yep','y','please',
-                   'ஆம்','ஆமா','சரி','हाँ','हां','جي','نعم','oui','ja','sí'];
-      if (YES.some(w => text.toLowerCase().includes(w))) {
-        await askBackend(orig, true);
-      } else {
-        appendMsg('bot', 'No problem! You can upload a PDF guide for this topic and I\'ll answer from it. 📄');
-      }
-      return;
-    }
-
-    await askBackend(text, false);
-  }
-
-  async function askBackend(query, useGeneral) {
-    isLoading = true;
-    sendBtn.disabled = true;
-    showTyping();
+    isTyping = true; setDisabled(true); showTyping();
 
     try {
-      const res = await fetch(`${BASE}/widget/ask`, {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({
-          bot_id:      BOT_ID,
-          api_key:     API_KEY,
-          query:       query,
-          session_id:  SESSION_ID,
-          use_general: useGeneral,
-          language:    'English'
-        })
-      });
-
-      const data = await res.json();
+      const data = await callAsk(text, false);
       hideTyping();
 
-      if (data.error) {
-        appendMsg('bot', '⚠️ ' + data.error, true);
-        return;
-      }
-
-      if (data.response === null) {
-        pendingGeneral = query;
-        appendMsg('bot',
-          "I don't have PDF information for this topic.\n\n" +
-          "Would you like me to answer from general knowledge? *(yes / no)*"
+      if (data.response === null || data.response === undefined) {
+        pendingGeneralQuery = text;
+        addBot(
+          "I don't have specific information about that in my documents.\n\nWould you like me to answer from my general knowledge?",
+          true
         );
       } else {
-        appendMsg('bot', data.response, false,
-          data.rewritten_query !== query ? data.rewritten_query : null,
-          !data.has_pdf_context
-        );
+        addBot(data.response);
       }
     } catch {
       hideTyping();
-      appendMsg('bot', '⚠️ Connection error. Please try again.', true);
+      addBot("⚠️ Something went wrong. Please try again in a moment.");
     } finally {
-      isLoading = false;
-      sendBtn.disabled = false;
+      isTyping = false; setDisabled(false); inputEl.focus();
     }
   }
 
-  // ── Render messages ────────────────────────────────────
-  function appendMsg(role, text, isError=false, rewritten=null, isGeneral=false) {
-    const msgs = document.getElementById('bw-messages');
-    const row  = document.createElement('div');
-    row.className = 'bw-msg ' + role;
+  // ── Input ─────────────────────────────────────────────
+  function setDisabled(v) { inputEl.disabled = v; sendBtn.disabled = v; }
 
-    const av = document.createElement('div');
-    av.className = 'bw-av ' + (role==='bot'?'bot':'user');
-    av.textContent = role === 'bot' ? '🤖' : '🧑';
-
-    const bubble = document.createElement('div');
-    bubble.className = 'bw-bubble ' + (isError ? 'error' : role);
-    bubble.style.background = (role==='user' && !isError)
-      ? (botConfig?.primary_color || '#1f6feb') : '';
-    bubble.innerHTML = renderMarkdown(text);
-
-    if (rewritten) {
-      const hint = document.createElement('div');
-      hint.className = 'bw-rewrite';
-      hint.textContent = '🔍 Searched as: "' + rewritten + '"';
-      bubble.appendChild(hint);
-    }
-    if (isGeneral) {
-      const note = document.createElement('div');
-      note.className = 'bw-general-note';
-      note.textContent = 'ℹ️ From general knowledge';
-      bubble.appendChild(note);
-    }
-
-    if (role === 'user') { row.appendChild(bubble); row.appendChild(av); }
-    else                  { row.appendChild(av); row.appendChild(bubble); }
-
-    msgs.appendChild(row);
-    scrollBottom();
+  function autoResize() {
+    inputEl.style.height = "auto";
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 100) + "px";
   }
 
-  function showSystemMsg(txt) {
-    const msgs = document.getElementById('bw-messages');
-    const el   = document.createElement('div');
-    el.style.cssText = 'text-align:center;font-size:12px;color:#8b949e;padding:8px';
-    el.textContent = txt;
-    msgs.appendChild(el);
-  }
+  inputEl.addEventListener("input", autoResize);
+  inputEl.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  sendBtn.addEventListener("click", send);
 
-  let typingEl = null;
-  function showTyping() {
-    const msgs = document.getElementById('bw-messages');
-    typingEl   = document.createElement('div');
-    typingEl.className = 'bw-msg';
-    typingEl.innerHTML = `
-      <div class="bw-av bot">🤖</div>
-      <div class="bw-bubble bot bw-typing"><span></span><span></span><span></span></div>`;
-    msgs.appendChild(typingEl);
-    scrollBottom();
-  }
-  function hideTyping() {
-    if (typingEl) { typingEl.remove(); typingEl = null; }
-  }
-
-  function scrollBottom() {
-    const msgs = document.getElementById('bw-messages');
-    msgs.scrollTop = msgs.scrollHeight;
-  }
-
-  function renderMarkdown(text) {
-    return text
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-      .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
-      .replace(/\*(.+?)\*/g,'<em>$1</em>')
-      .replace(/\n/g,'<br>');
-  }
-
-  // ── Init ───────────────────────────────────────────────
-  loadConfig();
+  // ── Close on outside click ────────────────────────────
+  document.addEventListener("click", e => {
+    if (isOpen && !panel.contains(e.target) && !bubble.contains(e.target)) closePanel();
+  });
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && isOpen) closePanel(); });
 
 })();
