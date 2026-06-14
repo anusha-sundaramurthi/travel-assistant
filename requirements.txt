@@ -14,15 +14,11 @@ openai
 pymupdf
 pydantic
 requests
-streamlit
 langchain-classic
 pyyaml
-ragas
-datasets
-pandas
-sentence-transformers
 
 
 # Auth dependencies
 python-jose[cryptography]
 passlib[bcrypt]
+

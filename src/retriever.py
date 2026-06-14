@@ -9,19 +9,6 @@ from qdrant_client.models import (
     Fusion,
     Document as QdrantDocument,
 )
-from sentence_transformers import CrossEncoder
-
-
-# ── Reranker (loaded once, reused across requests) ────────
-_reranker = None
-
-def get_reranker() -> CrossEncoder:
-    global _reranker
-    if _reranker is None:
-        print("[Reranker] Loading cross-encoder model...")
-        _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-        print("[Reranker] Model loaded.")
-    return _reranker
 
 
 # ── Dynamic threshold ─────────────────────────────────────
@@ -77,67 +64,17 @@ def normalize_query(query: str) -> str:
         print(f"[Retriever] Normalized: '{query}' → '{normalized}'")
     return normalized
 
+def retrieve_docs(query: str, top_k: int = 10, collection_name: str = None) -> list[str]:
+    target_collection = collection_name or COLLECTION_NAME
+    client            = get_qdrant_client()
 
-# ── Reranker ──────────────────────────────────────────────
-def rerank(query: str, chunks: list[str], top_n: int = 4) -> list[str]:
-    if not chunks:
-        return chunks
-    if len(chunks) == 1:
-        return chunks
+    normalized_query      = normalize_query(query)
+    TOP_SCORE_THRESHOLD   = get_threshold(normalized_query)
+    query_vector          = get_embeddings([normalized_query])[0]
 
-    reranker = get_reranker()
-    pairs  = [(query, chunk) for chunk in chunks]
-    scores = reranker.predict(pairs)
-    ranked = sorted(zip(scores, chunks), key=lambda x: x[0], reverse=True)
-
-    print(f"[Reranker] Scores: {[round(s, 3) for s, _ in ranked]}")
-    print(f"[Reranker] Kept top {min(top_n, len(ranked))} chunks")
-
-    return [chunk for _, chunk in ranked[:top_n]]
-
-
-# ── Main retrieval function ───────────────────────────────
-def retrieve_docs(query: str, top_k: int = 15) -> list[str]:
-    """
-    Hybrid retrieval pipeline:
-    1. Normalize query spelling
-    2. Dynamic threshold based on query type
-    3. Hybrid search — dense (OpenAI ada-002) + sparse (BM25)
-       fused with Reciprocal Rank Fusion (RRF)
-    4. Score threshold filtering
-    5. Reranking with cross-encoder to pick best 4 chunks
-    """
-    client = get_qdrant_client()
-
-    # Step 1 — normalize
-    normalized_query = normalize_query(query)
-
-    # Step 2 — dynamic threshold
-    TOP_SCORE_THRESHOLD = get_threshold(normalized_query)
-
-    # Step 3 — embed query for dense search
-    query_vector = get_embeddings([normalized_query])[0]
-
-    # Step 4 — hybrid search (dense + BM25 fused via RRF)
-    # Fetch top 20 from each, fuse, return top_k
     search_result = client.query_points(
-        collection_name=COLLECTION_NAME,
-        prefetch=[
-            Prefetch(
-                query=query_vector,
-                using="dense",
-                limit=20
-            ),
-            Prefetch(
-                query=QdrantDocument(
-                    text=normalized_query,
-                    model="Qdrant/bm25"
-                ),
-                using="bm25",
-                limit=20
-            )
-        ],
-        query=FusionQuery(fusion=Fusion.RRF),
+        collection_name=target_collection,
+        query=query_vector,
         limit=top_k,
         with_payload=True
     )
@@ -145,21 +82,19 @@ def retrieve_docs(query: str, top_k: int = 15) -> list[str]:
     hits = search_result.points
 
     if not hits:
-        print("[Retriever] No results found in Qdrant.")
+        print("[Retriever] No results found.")
         return []
 
-    # Step 5 — score threshold check
     best_score = hits[0].score
-    print(f"[Retriever] Best RRF score: {best_score:.3f} | Threshold: {TOP_SCORE_THRESHOLD}")
+    print(f"[Retriever] Best score: {best_score:.3f} | Threshold: {TOP_SCORE_THRESHOLD}")
 
     if best_score < TOP_SCORE_THRESHOLD:
-        print(f"[Retriever] Best score below threshold — no relevant context")
+        print(f"[Retriever] Below threshold — no relevant context")
         return []
 
-    # Step 6 — relative + absolute filter
-    keep_threshold = max(best_score * 0.80, TOP_SCORE_THRESHOLD)
+    keep_threshold = max(best_score * 0.85, MIN_CHUNK_SCORE)
+    relevant       = []
 
-    relevant = []
     for hit in hits:
         score  = hit.score
         text   = hit.payload.get("text", "")
@@ -170,12 +105,5 @@ def retrieve_docs(query: str, top_k: int = 15) -> list[str]:
         else:
             print(f"[Retriever] Dropped {score:.3f} | {source}")
 
-    print(f"[Retriever] After threshold: {len(relevant)} chunks")
-
-    if not relevant:
-        return []
-
-    # Step 7 — rerank and return best 4
-    reranked = rerank(normalized_query, relevant, top_n=4)
-    print(f"[Retriever] Final: {len(reranked)} chunks after reranking")
-    return reranked
+    print(f"[Retriever] Final: {len(relevant)} chunks kept")
+    return relevant
