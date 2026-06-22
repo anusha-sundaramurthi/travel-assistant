@@ -129,6 +129,12 @@
     .aiw-bub {
       padding:10px 14px; border-radius:16px;
       font-size:14px; line-height:1.55; color:#1a1a1a;
+      /* FIX: prevent text overflow — wrap long words and break URLs */
+      word-wrap:break-word;
+      overflow-wrap:break-word;
+      word-break:break-word;
+      white-space:pre-wrap;
+      min-width:0;
     }
     .aiw-bot  .aiw-bub { background:#f4f4f5; border-bottom-left-radius:4px; }
     .aiw-user .aiw-bub { background:${COLOR}; color:white; border-bottom-right-radius:4px; }
@@ -172,17 +178,31 @@
       padding:10px 16px; font-size:14px; outline:none; resize:none;
       max-height:100px; line-height:1.4; color:#1a1a1a; background:#fafafa;
       transition:border-color .15s; font-family:inherit;
+      overflow-y:hidden;
     }
+    #aiw-input::-webkit-scrollbar { display:none; }
+    #aiw-input { scrollbar-width:none; -ms-overflow-style:none; }
     #aiw-input:focus { border-color:${COLOR}; background:white; }
     #aiw-input::placeholder { color:#bbb; }
+
+    /* FIX: send button hidden by default, appears only when input has text */
     #aiw-send {
       width:40px; height:40px; border-radius:50%;
       background:${COLOR}; border:none; cursor:pointer;
       display:flex; align-items:center; justify-content:center;
-      flex-shrink:0; transition:opacity .15s, transform .15s;
+      flex-shrink:0;
+      opacity:0;
+      transform:scale(0.6);
+      pointer-events:none;
+      transition:opacity .2s ease, transform .2s ease;
     }
-    #aiw-send:hover   { opacity:.88; transform:scale(1.05); }
-    #aiw-send:disabled { opacity:.45; cursor:not-allowed; transform:none; }
+    #aiw-send.aiw-send-visible {
+      opacity:1;
+      transform:scale(1);
+      pointer-events:all;
+    }
+    #aiw-send:hover   { opacity:.88 !important; transform:scale(1.05) !important; }
+    #aiw-send:disabled { opacity:.45 !important; cursor:not-allowed; transform:scale(1) !important; }
     #aiw-send svg { width:18px; height:18px; fill:white; }
 
     #aiw-powered { text-align:center; font-size:11px; color:#ccc; margin-top:8px; }
@@ -352,7 +372,9 @@
     if (!text || isTyping) return;
 
     addUser(text);
-    inputEl.value = ""; autoResize();
+    inputEl.value = "";
+    autoResize();
+    updateSendBtn(); // hide button after clearing input
 
     isTyping = true; setDisabled(true); showTyping();
 
@@ -385,7 +407,17 @@
     inputEl.style.height = Math.min(inputEl.scrollHeight, 100) + "px";
   }
 
-  inputEl.addEventListener("input", autoResize);
+  // FIX: show/hide send button based on whether input has text
+  function updateSendBtn() {
+    const hasText = inputEl.value.trim().length > 0;
+    if (hasText) {
+      sendBtn.classList.add("aiw-send-visible");
+    } else {
+      sendBtn.classList.remove("aiw-send-visible");
+    }
+  }
+
+  inputEl.addEventListener("input", () => { autoResize(); updateSendBtn(); });
   inputEl.addEventListener("keydown", e => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
