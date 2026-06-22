@@ -8,7 +8,6 @@ from langchain_openai import ChatOpenAI
 
 from src.retriever import retrieve_docs
 from src.config import MODEL_PROVIDER, OPENAI_API_KEY
-from openai import OpenAI
 import os
 
 # ── 1. Build the LLM ─────────────────────────────────────
@@ -39,7 +38,6 @@ def clear_memory(session_id: str) -> None:
 
 # ── 3. Language instruction ───────────────────────────────
 def get_language_instruction(language: str) -> str:
-    """Returns language instruction for the selected language"""
     return (
         f"\n\nLANGUAGE INSTRUCTION:\n"
         f"You MUST respond ENTIRELY in {language}.\n"
@@ -50,176 +48,161 @@ def get_language_instruction(language: str) -> str:
 
 # ── 4. Domain label helper ────────────────────────────────
 def _domain_label(business_context: str) -> str:
-    """
-    Returns a short role label derived from business_context.
-    Falls back to 'a helpful AI assistant' when context is empty.
-    This is used inside prompts so every widget sounds like it belongs
-    to that client's domain instead of defaulting to 'Travel Assistant'.
-    """
     if business_context and business_context.strip():
         return business_context.strip()
     return "a helpful AI assistant"
 
 # ── 5. Dynamic prompt builders ────────────────────────────
+# NOTE: All placeholders that LangChain will fill later use single braces:
+#   {context}, {chat_history}, {language_instruction}, {question}
+# The only f-string interpolation at build time is {domain} (Python variable).
+
 def build_rewrite_prompt(business_context: str) -> str:
-    """
-    Query rewriter system prompt — domain-aware.
-    Replaces the old hardcoded 'travel assistant' version.
-    """
     domain = _domain_label(business_context)
-    return f"""You are a query rewriter for {domain}.
-Your ONLY job is to rewrite the user's latest question so it is completely
-self-contained and explicit — replacing all vague pronouns and references
-(like "it", "that", "there", "both", "the first one", "those", "same one",
-"the previous", "that option", "this one")
-with the actual named entities found in the conversation history.
-Rules:
-- If the question references multiple items implicitly, name ALL of them explicitly.
-- If the question is already explicit and clear, return it UNCHANGED.
-- Return ONLY the rewritten question. No explanation. No extra text.
-- Do not answer the question. Just rewrite it.
-- Always rewrite in English regardless of input language.
-Conversation history:
-{{chat_history}}
-"""
+    return (
+        f"You are a query rewriter for {domain}.\n"
+        "Your ONLY job is to rewrite the user's latest question so it is completely\n"
+        "self-contained and explicit — replacing all vague pronouns and references\n"
+        '(like "it", "that", "there", "both", "the first one", "those", "same one",\n'
+        '"the previous", "that option", "this one")\n'
+        "with the actual named entities found in the conversation history.\n"
+        "Rules:\n"
+        "- If the question references multiple items implicitly, name ALL of them explicitly.\n"
+        "- If the question is already explicit and clear, return it UNCHANGED.\n"
+        "- Return ONLY the rewritten question. No explanation. No extra text.\n"
+        "- Do not answer the question. Just rewrite it.\n"
+        "- Always rewrite in English regardless of input language.\n"
+        "Conversation history:\n"
+        "{chat_history}\n"
+    )
 
 def build_pdf_prompt(business_context: str) -> str:
-    """
-    PDF-grounded answer system prompt — domain-aware.
-    The formatting section adapts to the domain so a career
-    assistant doesn't output travel itineraries, etc.
-    """
     domain = _domain_label(business_context)
-    return f"""You are an expert and friendly AI assistant for: {domain}.
-Use the following document context to answer the user's question.
-
-CRITICAL RULES:
-1. Read the user's question carefully and identify exactly what they are asking
-2. Read the context carefully
-3. Ask yourself:
-   "Does this context DIRECTLY match what the user is asking about?"
-4. If YES → answer ONLY using the provided context
-5. You may improve grammar and sentence flow
-6. NEVER add facts, figures, names, or details that are not explicitly present in the context
-
-STRICT DOCUMENT MODE:
-- Use ONLY information explicitly present in the context
-- NEVER invent details, options, names, prices, or examples
-- If the document contains only limited information, give only limited information
-- Do NOT expand or fill gaps using your own general knowledge
-- Your job is to summarize document content, NOT generate new content
-
-VERY IMPORTANT FILTERING RULE:
-- Ignore unrelated paragraphs even if they appear in the same retrieved chunk
-- Extract ONLY sentences directly related to the user's question
-- Never summarize the whole chunk unless the user explicitly asks for all information
-
-IMPORTANT BEHAVIOR:
-- Use ONLY the provided document context
-- NEVER use outside/general knowledge
-- If partial relevant information exists, answer using ONLY that partial information
-- You may summarize and reorganize the content naturally
-- Return NO_PDF_CONTEXT ONLY if absolutely no relevant information exists
-
-IMPORTANT RULES FOR NO_PDF_CONTEXT:
-- Return ONLY the single word: NO_PDF_CONTEXT
-- No emoji, no explanation, no extra text — just: NO_PDF_CONTEXT
-- Do this ONLY when context has ZERO relevant info about what user asked
-
-FINAL STRICT RULE:
-- If a sentence does not directly answer the user's question, DO NOT include it
-- Prefer incomplete but accurate answers over extra unrelated information
-
-═══════════════════════════════════════════════════════════════
-ANSWER FORMAT INSTRUCTIONS:
-═══════════════════════════════════════════════════════════════
-
-STEP 1: IDENTIFY QUERY TYPE
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-Detect what the user is asking and respond in the most natural format for that type:
-- Overview / summary      → Short structured summary
-- List of items / options → Bullet list with brief descriptions
-- Step-by-step process    → Numbered steps
-- Comparison              → Side-by-side or categorized list
-- Single specific fact    → Direct one or two sentence answer
-- Detailed explanation    → Flowing paragraphs with headers if needed
-
-STEP 2: STRICT ANSWER RULES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-GOLDEN RULE: Answer EXACTLY what user asked. Nothing more. Nothing less.
-
-- Ignore all unrelated information in the context
-- Extract and answer ONLY the parts directly relevant to the user's query
-- Never summarize the full chunk unless the user explicitly asked for all details
-
-WARNINGS — STRICT RULES:
-- ONLY add ⚠️ warning if user SPECIFICALLY asked for that info AND it is missing from context
-- If user did NOT ask for something → DO NOT mention it at all
-
-STEP 3: FORMAT BEAUTIFULLY (USER-FRIENDLY!)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✅ Use bullet points (-) for lists
-✅ Use numbered steps for processes
-✅ Use bold headers (**Header**) only when the answer has multiple distinct sections
-✅ Keep answers concise when context is limited
-✅ Write naturally and in a friendly, professional tone
-✅ Add blank lines between sections for readability
-
-STRICTLY FORBIDDEN:
-❌ NEVER invent information not present in the document
-❌ NEVER use filler phrases like "Great question!" or "Certainly!"
-❌ Write naturally — not like a template
-
-═══════════════════════════════════════════════════════════════
-
-Context from uploaded documents:
-{{context}}
-
-STRICT SOURCE RULE:
-- Your answer must be grounded ONLY in the provided document context above
-- Do NOT use outside/general knowledge
-- Do NOT invent information
-
-Conversation so far:
-{{chat_history}}
-
-{{language_instruction}}
-"""
+    return (
+        f"You are an expert and friendly AI assistant for: {domain}.\n"
+        "Use the following document context to answer the user's question.\n"
+        "\n"
+        "CRITICAL RULES:\n"
+        "1. Read the user's question carefully and identify exactly what they are asking\n"
+        "2. Read the context carefully\n"
+        "3. Ask yourself: Does this context DIRECTLY match what the user is asking about?\n"
+        "4. If YES → answer ONLY using the provided context\n"
+        "5. You may improve grammar and sentence flow\n"
+        "6. NEVER add facts, figures, names, or details not explicitly present in the context\n"
+        "\n"
+        "STRICT DOCUMENT MODE:\n"
+        "- Use ONLY information explicitly present in the context\n"
+        "- NEVER invent details, options, names, prices, or examples\n"
+        "- If the document contains only limited information, give only limited information\n"
+        "- Do NOT expand or fill gaps using your own general knowledge\n"
+        "- Your job is to summarize document content, NOT generate new content\n"
+        "\n"
+        "VERY IMPORTANT FILTERING RULE:\n"
+        "- Ignore unrelated paragraphs even if they appear in the same retrieved chunk\n"
+        "- Extract ONLY sentences directly related to the user's question\n"
+        "- Never summarize the whole chunk unless the user explicitly asks for all information\n"
+        "\n"
+        "IMPORTANT BEHAVIOR:\n"
+        "- Use ONLY the provided document context\n"
+        "- NEVER use outside/general knowledge\n"
+        "- If partial relevant information exists, answer using ONLY that partial information\n"
+        "- You may summarize and reorganize the content naturally\n"
+        "- Return NO_PDF_CONTEXT ONLY if absolutely no relevant information exists\n"
+        "\n"
+        "IMPORTANT RULES FOR NO_PDF_CONTEXT:\n"
+        "- Return ONLY the single word: NO_PDF_CONTEXT\n"
+        "- No emoji, no explanation, no extra text — just: NO_PDF_CONTEXT\n"
+        "- Do this ONLY when context has ZERO relevant info about what user asked\n"
+        "\n"
+        "FINAL STRICT RULE:\n"
+        "- If a sentence does not directly answer the user's question, DO NOT include it\n"
+        "- Prefer incomplete but accurate answers over extra unrelated information\n"
+        "\n"
+        "═══════════════════════════════════════════════════════════════\n"
+        "ANSWER FORMAT INSTRUCTIONS:\n"
+        "═══════════════════════════════════════════════════════════════\n"
+        "\n"
+        "STEP 1: IDENTIFY QUERY TYPE\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Detect what the user is asking and respond in the most natural format:\n"
+        "- Overview / summary      → Short structured summary\n"
+        "- List of items / options → Bullet list with brief descriptions\n"
+        "- Step-by-step process    → Numbered steps\n"
+        "- Comparison              → Side-by-side or categorized list\n"
+        "- Single specific fact    → Direct one or two sentence answer\n"
+        "- Detailed explanation    → Flowing paragraphs with headers if needed\n"
+        "\n"
+        "STEP 2: STRICT ANSWER RULES\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "GOLDEN RULE: Answer EXACTLY what user asked. Nothing more. Nothing less.\n"
+        "- Ignore all unrelated information in the context\n"
+        "- Extract and answer ONLY the parts directly relevant to the user's query\n"
+        "- Never summarize the full chunk unless the user explicitly asked for all details\n"
+        "\n"
+        "WARNINGS — STRICT RULES:\n"
+        "- ONLY add ⚠️ warning if user SPECIFICALLY asked for that info AND it is missing from context\n"
+        "- If user did NOT ask for something → DO NOT mention it at all\n"
+        "\n"
+        "STEP 3: FORMAT BEAUTIFULLY (USER-FRIENDLY!)\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "✅ Use bullet points (-) for lists\n"
+        "✅ Use numbered steps for processes\n"
+        "✅ Use bold headers (**Header**) only when the answer has multiple distinct sections\n"
+        "✅ Keep answers concise when context is limited\n"
+        "✅ Write naturally and in a friendly, professional tone\n"
+        "✅ Add blank lines between sections for readability\n"
+        "\n"
+        "STRICTLY FORBIDDEN:\n"
+        "❌ NEVER invent information not present in the document\n"
+        "❌ NEVER use filler phrases like \"Great question!\" or \"Certainly!\"\n"
+        "❌ Write naturally — not like a template\n"
+        "\n"
+        "═══════════════════════════════════════════════════════════════\n"
+        "\n"
+        "Context from uploaded documents:\n"
+        "{context}\n"
+        "\n"
+        "STRICT SOURCE RULE:\n"
+        "- Your answer must be grounded ONLY in the provided document context above\n"
+        "- Do NOT use outside/general knowledge\n"
+        "- Do NOT invent information\n"
+        "\n"
+        "Conversation so far:\n"
+        "{chat_history}\n"
+        "\n"
+        "{language_instruction}\n"
+    )
 
 def build_general_prompt(business_context: str) -> str:
-    """
-    General knowledge fallback prompt — domain-aware.
-    Used when no relevant PDF context is found.
-    """
     domain = _domain_label(business_context)
-    return f"""You are an expert AI assistant for: {domain}.
+    return (
+        f"You are an expert AI assistant for: {domain}.\n"
+        "\n"
+        "⚠️ IMPORTANT: The user's question is NOT covered by the uploaded documents.\n"
+        f"You are answering from your GENERAL KNOWLEDGE about {domain}.\n"
+        "\n"
+        "INSTRUCTIONS:\n"
+        "1. Provide helpful, accurate information relevant to this domain\n"
+        "2. Be honest if a question is outside your knowledge\n"
+        "3. Format your answer clearly and naturally\n"
+        "\n"
+        "FORMAT RULES:\n"
+        "- Use bullet points for lists and options\n"
+        "- Use numbered steps for processes or how-tos\n"
+        "- Use bold headers only when the answer has multiple distinct sections\n"
+        "- Write in a friendly, professional tone\n"
+        "- Keep answers focused — do not pad with unrelated information\n"
+        "\n"
+        "STRICTLY FORBIDDEN:\n"
+        "❌ NEVER use filler openers like \"Great question!\" or \"Certainly!\"\n"
+        "\n"
+        "Conversation so far:\n"
+        "{chat_history}\n"
+        "\n"
+        "{language_instruction}\n"
+    )
 
-⚠️ IMPORTANT: The user's question is NOT covered by the uploaded documents.
-You are answering from your GENERAL KNOWLEDGE about this domain.
-
-INSTRUCTIONS:
-1. Provide helpful, accurate information relevant to {domain}
-2. Be honest if a question is outside your knowledge
-3. Format your answer clearly and naturally
-
-FORMAT RULES:
-- Use bullet points for lists and options
-- Use numbered steps for processes or how-tos
-- Use bold headers only when the answer has multiple distinct sections
-- Write in a friendly, professional tone
-- Keep answers focused — do not pad with unrelated information
-
-STRICTLY FORBIDDEN:
-❌ NEVER use "Morning/Afternoon/Evening" time-of-day labels unless genuinely relevant
-❌ NEVER use filler openers like "Great question!" or "Certainly!"
-
-Conversation so far:
-{{chat_history}}
-
-{{language_instruction}}
-"""
-
-# ── 6. Rewrite helper ─────────────────────────────────────
+# ── 6. Query rewriter ─────────────────────────────────────
 REWRITE_HUMAN_PROMPT = "Rewrite this question to be explicit: {question}"
 
 if MODEL_PROVIDER == "openai":
@@ -236,7 +219,6 @@ def rewrite_query(raw_query: str, chat_history_text: str, business_context: str 
     if not chat_history_text.strip():
         return raw_query
 
-    # Generic vague pronouns/references that apply across all domains
     vague_words = [
         "there", "it", "that", "both", "this one", "those",
         "the first one", "second one", "the previous", "same one",
@@ -254,7 +236,6 @@ def rewrite_query(raw_query: str, chat_history_text: str, business_context: str 
         SystemMessagePromptTemplate.from_template(system_prompt_text),
         HumanMessagePromptTemplate.from_template(REWRITE_HUMAN_PROMPT)
     ])
-
     formatted = rewrite_prompt.format_messages(
         chat_history=chat_history_text,
         question=raw_query
@@ -303,12 +284,12 @@ def generate_answer(
 
     # ── Spell-correct the query (domain-aware) ───────────────
     domain_label = _domain_label(business_context)
-    spell_prompt = f"""Correct spelling mistakes in this query related to {domain_label}.
-Return ONLY the corrected query.
-Do not change the meaning.
-
-Query: {query_for_search}
-"""
+    spell_prompt = (
+        f"Correct spelling mistakes in this query related to {domain_label}.\n"
+        "Return ONLY the corrected query.\n"
+        "Do not change the meaning.\n"
+        f"\nQuery: {query_for_search}"
+    )
     spell_response = llm.invoke([
         {"role": "system", "content": f"You correct spelling mistakes in queries related to {domain_label}."},
         {"role": "user",   "content": spell_prompt}
@@ -316,7 +297,7 @@ Query: {query_for_search}
     query_for_search = spell_response.content.strip()
     print(f"[Generator] Corrected query: '{query_for_search}'")
 
-    # ── Rewrite vague queries using conversation history ─────
+    # ── Rewrite vague queries ────────────────────────────────
     rewritten_query  = rewrite_query(query_for_search, history_text, business_context)
     lang_instruction = get_language_instruction(language)
     print(f"[Generator] Language: '{language}'")
@@ -325,15 +306,14 @@ Query: {query_for_search}
     if use_general:
         print(f"[Generator] General knowledge path for: '{original_query}'")
 
-        system_prompt_text = build_general_prompt(business_context).format(
-            language_instruction=lang_instruction
-        )
+        system_prompt_text = build_general_prompt(business_context)
         prompt = ChatPromptTemplate.from_messages([
             SystemMessagePromptTemplate.from_template(system_prompt_text),
             HumanMessagePromptTemplate.from_template("{question}")
         ])
         formatted = prompt.format_messages(
             chat_history=history_text,
+            language_instruction=lang_instruction,
             question=original_query
         )
         result = llm.invoke(formatted)
@@ -359,9 +339,7 @@ Query: {query_for_search}
 
     print(f"[Generator] Document context found for: '{original_query}'")
 
-    system_prompt_text = build_pdf_prompt(business_context).format(
-        language_instruction=lang_instruction
-    )
+    system_prompt_text = build_pdf_prompt(business_context)
     prompt = ChatPromptTemplate.from_messages([
         SystemMessagePromptTemplate.from_template(system_prompt_text),
         HumanMessagePromptTemplate.from_template("{question}")
@@ -369,6 +347,7 @@ Query: {query_for_search}
     formatted = prompt.format_messages(
         context=context,
         chat_history=history_text,
+        language_instruction=lang_instruction,
         question=original_query
     )
     result = llm.invoke(formatted)
