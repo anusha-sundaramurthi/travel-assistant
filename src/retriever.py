@@ -11,10 +11,14 @@ from qdrant_client.models import (
 )
 
 
-# ── Dynamic threshold ─────────────────────────────────────
-# Specific factual queries (elevation, date, permit) need
-# tight threshold — we want exact chunk matches.
-# Broad queries (itinerary, plan, guide) cast a wider net.
+# ── Thresholds ────────────────────────────────────────────
+# MIN_CHUNK_SCORE: absolute floor — no chunk below this is
+# ever kept, regardless of what the best score is.
+MIN_CHUNK_SCORE = 0.45
+
+# Specific factual queries need a tighter top-score threshold
+# so we only return exact chunk matches.
+# Broad queries cast a wider net.
 
 SPECIFIC_KEYWORDS = [
     "elevation", "distance", "year", "age", "how many",
@@ -64,13 +68,14 @@ def normalize_query(query: str) -> str:
         print(f"[Retriever] Normalized: '{query}' → '{normalized}'")
     return normalized
 
+
 def retrieve_docs(query: str, top_k: int = 10, collection_name: str = None) -> list[str]:
     target_collection = collection_name or COLLECTION_NAME
     client            = get_qdrant_client()
 
-    normalized_query      = normalize_query(query)
-    TOP_SCORE_THRESHOLD   = get_threshold(normalized_query)
-    query_vector          = get_embeddings([normalized_query])[0]
+    normalized_query    = normalize_query(query)
+    TOP_SCORE_THRESHOLD = get_threshold(normalized_query)
+    query_vector        = get_embeddings([normalized_query])[0]
 
     search_result = client.query_points(
         collection_name=target_collection,
