@@ -37,7 +37,7 @@ def clear_memory(session_id: str) -> None:
     if session_id in _memory_store:
         del _memory_store[session_id]
 
-# ── 3. Language instruction (REMOVED AUTO DETECT) ─────────
+# ── 3. Language instruction ───────────────────────────────
 def get_language_instruction(language: str) -> str:
     """Returns language instruction for the selected language"""
     return (
@@ -48,99 +48,77 @@ def get_language_instruction(language: str) -> str:
         f"Even if the question is in a different language, answer in {language}."
     )
 
-# ── 4. Query rewriter ─────────────────────────────────────
-REWRITE_SYSTEM_PROMPT = """You are a query rewriter for a travel assistant.
+# ── 4. Domain label helper ────────────────────────────────
+def _domain_label(business_context: str) -> str:
+    """
+    Returns a short role label derived from business_context.
+    Falls back to 'a helpful AI assistant' when context is empty.
+    This is used inside prompts so every widget sounds like it belongs
+    to that client's domain instead of defaulting to 'Travel Assistant'.
+    """
+    if business_context and business_context.strip():
+        return business_context.strip()
+    return "a helpful AI assistant"
+
+# ── 5. Dynamic prompt builders ────────────────────────────
+def build_rewrite_prompt(business_context: str) -> str:
+    """
+    Query rewriter system prompt — domain-aware.
+    Replaces the old hardcoded 'travel assistant' version.
+    """
+    domain = _domain_label(business_context)
+    return f"""You are a query rewriter for {domain}.
 Your ONLY job is to rewrite the user's latest question so it is completely
 self-contained and explicit — replacing all vague pronouns and references
-(like "there", "it", "that place", "both", "the first one", "that city")
-with the actual destination names found in the conversation history.
+(like "it", "that", "there", "both", "the first one", "those", "same one",
+"the previous", "that option", "this one")
+with the actual named entities found in the conversation history.
 Rules:
-- If the question mentions multiple destinations implicitly, name ALL of them.
-- If the question is already explicit and clear, return it unchanged.
+- If the question references multiple items implicitly, name ALL of them explicitly.
+- If the question is already explicit and clear, return it UNCHANGED.
 - Return ONLY the rewritten question. No explanation. No extra text.
 - Do not answer the question. Just rewrite it.
 - Always rewrite in English regardless of input language.
 Conversation history:
-{chat_history}
+{{chat_history}}
 """
-REWRITE_HUMAN_PROMPT = "Rewrite this question to be explicit: {question}"
 
-rewrite_prompt = ChatPromptTemplate.from_messages([
-    SystemMessagePromptTemplate.from_template(REWRITE_SYSTEM_PROMPT),
-    HumanMessagePromptTemplate.from_template(REWRITE_HUMAN_PROMPT)
-])
-
-if MODEL_PROVIDER == "openai":
-    rewrite_llm = ChatOpenAI(api_key=os.getenv("GROQ_API_KEY"),
-    base_url="https://api.groq.com/openai/v1",
-    model_name="llama-3.3-70b-versatile",
-    temperature=0)
-else:
-    rewrite_llm = llm
-
-def rewrite_query(raw_query: str, chat_history_text: str) -> str:
-    if not chat_history_text.strip():
-        return raw_query
-    vague_words = [
-        "there", "it", "that place", "both", "the city",
-        "that country", "first one", "second one", "those",
-        "the destination", "that", "here", "same place"
-    ]
-    if not any(word in raw_query.lower() for word in vague_words):
-        print(f"[QueryRewriter] Already explicit — skipping: '{raw_query}'")
-        return raw_query
-    print(f"[QueryRewriter] Rewriting vague query: '{raw_query}'")
-    formatted = rewrite_prompt.format_messages(
-        chat_history=chat_history_text,
-        question=raw_query
-    )
-    result    = rewrite_llm.invoke(formatted)
-    rewritten = result.content.strip() if MODEL_PROVIDER == "openai" else str(result).strip()
-    print(f"[QueryRewriter] Result: '{rewritten}'")
-    return rewritten
-
-
-# ── 5. Prompts (REMOVED MORNING/AFTERNOON/EVENING FORMAT) ─
-PDF_ANSWER_SYSTEM_PROMPT = """You are an expert and friendly AI Travel Assistant.
-Use the following travel guide context to answer the user's question.
+def build_pdf_prompt(business_context: str) -> str:
+    """
+    PDF-grounded answer system prompt — domain-aware.
+    The formatting section adapts to the domain so a career
+    assistant doesn't output travel itineraries, etc.
+    """
+    domain = _domain_label(business_context)
+    return f"""You are an expert and friendly AI assistant for: {domain}.
+Use the following document context to answer the user's question.
 
 CRITICAL RULES:
-1. Read the user's question and identify what destination they are asking about
+1. Read the user's question carefully and identify exactly what they are asking
 2. Read the context carefully
 3. Ask yourself:
-"Does this context match BOTH:
-    1. the destination
-    2. the actual topic/question being asked?"
+   "Does this context DIRECTLY match what the user is asking about?"
 4. If YES → answer ONLY using the provided context
 5. You may improve grammar and sentence flow
-6. NEVER add places, hotels, attractions, activities, prices, or facts that are not explicitly present in the context
+6. NEVER add facts, figures, names, or details that are not explicitly present in the context
 
-
-STRICT PDF MODE:
+STRICT DOCUMENT MODE:
 - Use ONLY information explicitly present in the context
-- NEVER invent attractions, hotels, restaurants, activities, beaches, temples, cities, or plans
-- NEVER complete missing itineraries using your own knowledge
-- If the PDF contains only limited information, give only limited information
-- If the PDF has only 2 places, mention only those 2 places
-- Do NOT expand the trip beyond the provided context
-- Do NOT assume nearby attractions
-- Your job is to summarize PDF content, NOT generate new travel plans
+- NEVER invent details, options, names, prices, or examples
+- If the document contains only limited information, give only limited information
+- Do NOT expand or fill gaps using your own general knowledge
+- Your job is to summarize document content, NOT generate new content
+
 VERY IMPORTANT FILTERING RULE:
-- Ignore unrelated paragraphs even if they appear in the same chunk
+- Ignore unrelated paragraphs even if they appear in the same retrieved chunk
 - Extract ONLY sentences directly related to the user's question
-- If user asks about beaches, ignore villages, culture, temples, hotels, food, or other topics
-- If user asks about hotels, ignore attractions and itineraries
-- If user asks about food, ignore beaches and hotels
 - Never summarize the whole chunk unless the user explicitly asks for all information
 
 IMPORTANT BEHAVIOR:
-- Use ONLY the provided PDF context
+- Use ONLY the provided document context
 - NEVER use outside/general knowledge
-- If partial relevant information exists, answer using ONLY that information
-- You may summarize and reorganize the PDF content naturally
-- Do NOT require the PDF to contain a perfect itinerary
-- If user asks for a trip plan, use attractions, activities, cities, beaches, temples, and places found in the PDF to create the answer
-- Ignore unrelated text even if it appears in the same chunk
+- If partial relevant information exists, answer using ONLY that partial information
+- You may summarize and reorganize the content naturally
 - Return NO_PDF_CONTEXT ONLY if absolutely no relevant information exists
 
 IMPORTANT RULES FOR NO_PDF_CONTEXT:
@@ -151,128 +129,153 @@ IMPORTANT RULES FOR NO_PDF_CONTEXT:
 FINAL STRICT RULE:
 - If a sentence does not directly answer the user's question, DO NOT include it
 - Prefer incomplete but accurate answers over extra unrelated information
+
 ═══════════════════════════════════════════════════════════════
 ANSWER FORMAT INSTRUCTIONS:
 ═══════════════════════════════════════════════════════════════
 
 STEP 1: IDENTIFY QUERY TYPE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-Detect what user is asking:
-- Full trip/plan → Give day-by-day itinerary in NATURAL, USER-FRIENDLY format
-- Hotels         → List hotels only
-- Prices/cost    → Price breakdown only
-- Food           → Restaurants/cuisine only
-- Beaches        → Beach list only
-- Activities     → Activity list only
+Detect what the user is asking and respond in the most natural format for that type:
+- Overview / summary      → Short structured summary
+- List of items / options → Bullet list with brief descriptions
+- Step-by-step process    → Numbered steps
+- Comparison              → Side-by-side or categorized list
+- Single specific fact    → Direct one or two sentence answer
+- Detailed explanation    → Flowing paragraphs with headers if needed
 
 STEP 2: STRICT ANSWER RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 GOLDEN RULE: Answer EXACTLY what user asked. Nothing more. Nothing less.
 
-- Ignore all unrelated information in the context, even if it appears in the same retrieved chunk
+- Ignore all unrelated information in the context
 - Extract and answer ONLY the parts directly relevant to the user's query
-- Never summarize the full chunk unless the user asked for all details
-
-IF user asks "plan a trip":
-- Create a simple itinerary using ONLY places and activities found in the PDF
-- Do NOT invent extra places
-- Use available PDF information even if incomplete
-IF user asks "hotels"              → give ONLY hotels
-IF user asks "food"                → give ONLY food/restaurants
-IF user asks "beaches"             → give ONLY beaches
-IF user asks "trip with hotels"    → give itinerary AND hotels
-IF user asks "trip with price"     → give itinerary AND price
+- Never summarize the full chunk unless the user explicitly asked for all details
 
 WARNINGS — STRICT RULES:
 - ONLY add ⚠️ warning if user SPECIFICALLY asked for that info AND it is missing from context
-- If user asked ONLY "plan a trip" → NO hotel warning, NO price warning, NOTHING extra
-- If user asked "hotels" and hotels NOT in context → add warning
-- If user asked "price" and price NOT in context → add warning
 - If user did NOT ask for something → DO NOT mention it at all
 
 STEP 3: FORMAT BEAUTIFULLY (USER-FRIENDLY!)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-FOR TRIP QUESTIONS:
-- Summarize ONLY the activities and places explicitly mentioned in the context
-- Keep answer concise if context is small
-- Do not create extra day plans unless clearly present in context
-✅ Use simple day headers like "📅 Day 1", "📅 Day 2"
-✅ Use bullet points (-) for each activity
-✅ Describe what to do in flowing sentences
-✅ Make it engaging and easy to read
-✅ Add blank line between days
-
-FOR OTHER QUERY TYPES:
-- Hotels: List with categories (Luxury / Mid-range / Budget)
-- Food: Categorize by cuisine type
-- Activities: Group by theme
-- Beaches: List with brief descriptions
+✅ Use bullet points (-) for lists
+✅ Use numbered steps for processes
+✅ Use bold headers (**Header**) only when the answer has multiple distinct sections
+✅ Keep answers concise when context is limited
+✅ Write naturally and in a friendly, professional tone
+✅ Add blank lines between sections for readability
 
 STRICTLY FORBIDDEN:
-❌ NEVER use "Morning:", "Afternoon:", "Evening:" labels
-❌ NEVER give one-sentence-only activities
-❌ Write naturally like you're helping a friend plan their trip
+❌ NEVER invent information not present in the document
+❌ NEVER use filler phrases like "Great question!" or "Certainly!"
+❌ Write naturally — not like a template
 
 ═══════════════════════════════════════════════════════════════
 
-Context from travel guides:
+Context from uploaded documents:
 {{context}}
-STRICT SOURCE RULE:
-- Your answer must be grounded ONLY in the provided PDF context
-- Do NOT use outside/world knowledge
-- Do NOT invent information
-- Do NOT recommend extra places unless explicitly present in context
 
+STRICT SOURCE RULE:
+- Your answer must be grounded ONLY in the provided document context above
+- Do NOT use outside/general knowledge
+- Do NOT invent information
 
 Conversation so far:
 {{chat_history}}
 
-{language_instruction}
-
-
-
+{{language_instruction}}
 """
-GENERAL_ANSWER_SYSTEM_PROMPT = """You are an expert AI Travel Assistant.
 
-⚠️ IMPORTANT: The user's question is NOT covered by uploaded PDF guides.
-You are answering from your GENERAL TRAVEL KNOWLEDGE.
+def build_general_prompt(business_context: str) -> str:
+    """
+    General knowledge fallback prompt — domain-aware.
+    Used when no relevant PDF context is found.
+    """
+    domain = _domain_label(business_context)
+    return f"""You are an expert AI assistant for: {domain}.
+
+⚠️ IMPORTANT: The user's question is NOT covered by the uploaded documents.
+You are answering from your GENERAL KNOWLEDGE about this domain.
 
 INSTRUCTIONS:
-1. Provide helpful, accurate information
-2. Format beautifully and naturally
+1. Provide helpful, accurate information relevant to {domain}
+2. Be honest if a question is outside your knowledge
+3. Format your answer clearly and naturally
 
-FOR TRIP PLANS:
-- Write in natural, flowing paragraphs
-- Describe days conversationally
-- Include 3-5 activities per day with details
-- Make it engaging and easy to read
-- NO "Morning/Afternoon/Evening" labels - just natural narrative
+FORMAT RULES:
+- Use bullet points for lists and options
+- Use numbered steps for processes or how-tos
+- Use bold headers only when the answer has multiple distinct sections
+- Write in a friendly, professional tone
+- Keep answers focused — do not pad with unrelated information
 
-FOR OTHER QUERIES:
-- Hotels: Categorized lists (Luxury / Mid-range / Budget)
-- Food: Organized by cuisine type
-- Activities: Grouped by theme
-- Be friendly and helpful
+STRICTLY FORBIDDEN:
+❌ NEVER use "Morning/Afternoon/Evening" time-of-day labels unless genuinely relevant
+❌ NEVER use filler openers like "Great question!" or "Certainly!"
 
 Conversation so far:
 {{chat_history}}
 
-{language_instruction}
+{{language_instruction}}
 """
 
-# ── 6. Main answer function ───────────────────────────────
+# ── 6. Rewrite helper ─────────────────────────────────────
+REWRITE_HUMAN_PROMPT = "Rewrite this question to be explicit: {question}"
+
+if MODEL_PROVIDER == "openai":
+    rewrite_llm = ChatOpenAI(
+        api_key=os.getenv("GROQ_API_KEY"),
+        base_url="https://api.groq.com/openai/v1",
+        model_name="llama-3.3-70b-versatile",
+        temperature=0
+    )
+else:
+    rewrite_llm = llm
+
+def rewrite_query(raw_query: str, chat_history_text: str, business_context: str = "") -> str:
+    if not chat_history_text.strip():
+        return raw_query
+
+    # Generic vague pronouns/references that apply across all domains
+    vague_words = [
+        "there", "it", "that", "both", "this one", "those",
+        "the first one", "second one", "the previous", "same one",
+        "the option", "that option", "the item", "that item",
+        "here", "same place", "that one"
+    ]
+    if not any(word in raw_query.lower() for word in vague_words):
+        print(f"[QueryRewriter] Already explicit — skipping: '{raw_query}'")
+        return raw_query
+
+    print(f"[QueryRewriter] Rewriting vague query: '{raw_query}'")
+
+    system_prompt_text = build_rewrite_prompt(business_context)
+    rewrite_prompt = ChatPromptTemplate.from_messages([
+        SystemMessagePromptTemplate.from_template(system_prompt_text),
+        HumanMessagePromptTemplate.from_template(REWRITE_HUMAN_PROMPT)
+    ])
+
+    formatted = rewrite_prompt.format_messages(
+        chat_history=chat_history_text,
+        question=raw_query
+    )
+    result    = rewrite_llm.invoke(formatted)
+    rewritten = result.content.strip() if MODEL_PROVIDER == "openai" else str(result).strip()
+    print(f"[QueryRewriter] Result: '{rewritten}'")
+    return rewritten
+
+
+# ── 7. Main answer function ───────────────────────────────
 def generate_answer(
-    query:       str,
-    session_id:  str  = "default",
-    use_general: bool = False,
-    language:    str  = "English", # No more "auto" option
+    query:            str,
+    session_id:       str  = "default",
+    use_general:      bool = False,
+    language:         str  = "English",
     collection_name:  str  = None,
-    business_context: str  = ""      
+    business_context: str  = ""
 ) -> dict:
-    context_block = f"\nBUSINESS CONTEXT:\n{business_context}\n" if business_context else ""
-    """RAG pipeline with language support"""
-    
+    """RAG pipeline with language support and domain-aware prompts."""
+
     memory       = get_memory(session_id)
     history_vars = memory.load_memory_variables({})
     history_msgs = history_vars.get("chat_history", [])
@@ -282,51 +285,51 @@ def generate_answer(
         role          = "User" if msg.type == "human" else "Assistant"
         history_text += f"{role}: {msg.content}\n"
 
-    # Translate non-English queries to English for search
+    # ── Translate non-English queries to English for search ──
     original_query = query
-    
+
     if not all(ord(char) < 128 for char in query):
         print(f"[Generator] Non-English query detected: '{query}'")
         print(f"[Generator] Translating to English for search...")
-        
         translate_prompt = f"Translate this to English, keep it concise: {query}"
         translation_response = llm.invoke([
             {"role": "system", "content": "You are a translator. Translate to English."},
-            {"role": "user", "content": translate_prompt}
+            {"role": "user",   "content": translate_prompt}
         ])
         query_for_search = translation_response.content.strip()
         print(f"[Generator] English translation: '{query_for_search}'")
     else:
         query_for_search = query
-    spell_prompt = f"""
-        Correct spelling mistakes in this travel query.
-        Return ONLY the corrected query.
-        Do not change meaning.
 
-    Query: {query_for_search}
-    """
+    # ── Spell-correct the query (domain-aware) ───────────────
+    domain_label = _domain_label(business_context)
+    spell_prompt = f"""Correct spelling mistakes in this query related to {domain_label}.
+Return ONLY the corrected query.
+Do not change the meaning.
 
+Query: {query_for_search}
+"""
     spell_response = llm.invoke([
-        {"role": "system", "content": "You correct spelling mistakes in travel queries."},
-        {"role": "user", "content": spell_prompt}
+        {"role": "system", "content": f"You correct spelling mistakes in queries related to {domain_label}."},
+        {"role": "user",   "content": spell_prompt}
     ])
-
     query_for_search = spell_response.content.strip()
-
     print(f"[Generator] Corrected query: '{query_for_search}'")
-    rewritten_query = rewrite_query(query_for_search, history_text)
+
+    # ── Rewrite vague queries using conversation history ─────
+    rewritten_query  = rewrite_query(query_for_search, history_text, business_context)
     lang_instruction = get_language_instruction(language)
     print(f"[Generator] Language: '{language}'")
 
-    # ── Path A: General knowledge ─────────────────────────
+    # ── Path A: General knowledge ────────────────────────────
     if use_general:
         print(f"[Generator] General knowledge path for: '{original_query}'")
 
-        system_prompt = GENERAL_ANSWER_SYSTEM_PROMPT.format(
+        system_prompt_text = build_general_prompt(business_context).format(
             language_instruction=lang_instruction
         )
         prompt = ChatPromptTemplate.from_messages([
-            SystemMessagePromptTemplate.from_template(system_prompt),
+            SystemMessagePromptTemplate.from_template(system_prompt_text),
             HumanMessagePromptTemplate.from_template("{question}")
         ])
         formatted = prompt.format_messages(
@@ -342,26 +345,25 @@ def generate_answer(
             "has_pdf_context": False
         }
 
-    # ── Path B: PDF retrieval ─────────────────────────────
-    docs    = retrieve_docs(rewritten_query)
+    # ── Path B: PDF / document retrieval ────────────────────
+    docs    = retrieve_docs(rewritten_query, collection_name=collection_name)
     context = "\n".join(docs)
-    
 
     if not context.strip():
-        print(f"[Generator] No PDF context for: '{original_query}' → asking user")
+        print(f"[Generator] No document context for: '{original_query}' → asking user")
         return {
             "answer":          None,
             "rewritten_query": rewritten_query,
             "has_pdf_context": False
         }
 
-    print(f"[Generator] PDF context found for: '{original_query}'")
+    print(f"[Generator] Document context found for: '{original_query}'")
 
-    system_prompt = context_block + PDF_ANSWER_SYSTEM_PROMPT.format(
+    system_prompt_text = build_pdf_prompt(business_context).format(
         language_instruction=lang_instruction
     )
     prompt = ChatPromptTemplate.from_messages([
-        SystemMessagePromptTemplate.from_template(system_prompt),
+        SystemMessagePromptTemplate.from_template(system_prompt_text),
         HumanMessagePromptTemplate.from_template("{question}")
     ])
     formatted = prompt.format_messages(
@@ -371,14 +373,14 @@ def generate_answer(
     )
     result = llm.invoke(formatted)
     answer = result.content.strip() if MODEL_PROVIDER == "openai" else str(result).strip()
+
     if "NO_PDF_CONTEXT" in answer:
         print(f"[Generator] LLM detected irrelevant context → asking user")
         return {
-        "answer":          None,
-        "rewritten_query": rewritten_query,
-        "has_pdf_context": False
-    }
-
+            "answer":          None,
+            "rewritten_query": rewritten_query,
+            "has_pdf_context": False
+        }
 
     memory.save_context({"input": original_query}, {"answer": answer})
     return {

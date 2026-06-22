@@ -14,7 +14,7 @@ def _ensure_collection(client: QdrantClient, collection_name: str):
         print(f"[Qdrant] Creating collection '{collection_name}'...")
         client.create_collection(
             collection_name=collection_name,
-            vectors_config=VectorParams(size=1024, distance=Distance.COSINE),
+            vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
         )
         print(f"[Qdrant] Collection '{collection_name}' created.")
 
@@ -44,7 +44,7 @@ def clear_qdrant(collection_name: str = None):
     print(f"[Qdrant] Recreating collection '{name}'...")
     client.create_collection(
         collection_name=name,
-        vectors_config=VectorParams(size=1024, distance=Distance.COSINE),
+        vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
     )
     print(f"[Qdrant] Collection '{name}' cleared and ready.")
     return client

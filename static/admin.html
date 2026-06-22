@@ -529,7 +529,7 @@ function renderQueue() {
     <div class="pdf-item">
       <span>📄</span>
       <span class="fname">${esc(f.name)}</span>
-      <span class="fsize">${(f.size/1024).toFixed(0)} KB</span>
+      <span class="fsize">${(f.size/1536).toFixed(0)} KB</span>
       <span class="fstat" id="fstat-${i}">⏳ Pending</span>
       <button onclick="removeFromQueue(${i})" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px">✕</button>
     </div>`).join('');
