@@ -42,18 +42,91 @@
     return d.innerHTML;
   }
 
-  function formatMessage(text) {
-    return escapeHtml(text)
-      .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-      .replace(/\*(.*?)\*/g,     "<em>$1</em>")
-      .replace(/^### (.+)$/gm,  '<p class="aiw-h3">$1</p>')
-      .replace(/^## (.+)$/gm,   '<p class="aiw-h2">$1</p>')
-      .replace(/^# (.+)$/gm,    '<p class="aiw-h1">$1</p>')
-      .replace(/^- (.+)$/gm,    "<li>$1</li>")
-      .replace(/^(\d+)\. (.+)$/gm, "<li>$2</li>")
-      .replace(/(<li>[\s\S]*?<\/li>)/g, '<ul class="aiw-list">$1</ul>')
-      .replace(/\n\n/g, '</p><p class="aiw-para">')
-      .replace(/\n/g,   "<br>");
+  // ── Robust markdown-ish renderer ───────────────────────
+  // Processes block-by-block (split on blank lines / line breaks)
+  // instead of chained regex replacements — avoids malformed
+  // nested HTML (orphan <li>, unclosed <p>) that broke bubble
+  // layout previously.
+  function formatMessage(raw) {
+    const text = String(raw == null ? "" : raw);
+
+    // Split into lines, classify each line, then group
+    // consecutive list lines into single <ul> blocks.
+    const lines = text.split("\n");
+    const htmlParts = [];
+    let listBuffer = [];
+
+    function flushList() {
+      if (listBuffer.length) {
+        htmlParts.push('<ul class="aiw-list">' + listBuffer.join("") + "</ul>");
+        listBuffer = [];
+      }
+    }
+
+    function inlineFormat(line) {
+      // Escape first, then apply safe inline replacements.
+      // NOTE: avoid regex lookbehind/lookahead — unsupported
+      // in Safari < 16.4 and older mobile browsers, which would
+      // throw a SyntaxError at script load and break the widget
+      // entirely on those devices.
+      let out = escapeHtml(line);
+
+      // Bold: **text** — handle first so single-* pass below
+      // doesn't touch the asterisks already consumed here.
+      out = out.replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>");
+
+      // Italic: *text* (single asterisk, no lookbehind needed
+      // since ** pairs were already replaced above).
+      out = out.replace(/\*([^*]+?)\*/g, "<em>$1</em>");
+
+      return out;
+    }
+
+    for (let rawLine of lines) {
+      const line = rawLine.trim();
+
+      if (line === "") {
+        flushList();
+        continue;
+      }
+
+      // Headings
+      let m;
+      if ((m = line.match(/^###\s+(.+)$/))) {
+        flushList();
+        htmlParts.push('<p class="aiw-h3">' + inlineFormat(m[1]) + "</p>");
+        continue;
+      }
+      if ((m = line.match(/^##\s+(.+)$/))) {
+        flushList();
+        htmlParts.push('<p class="aiw-h2">' + inlineFormat(m[1]) + "</p>");
+        continue;
+      }
+      if ((m = line.match(/^#\s+(.+)$/))) {
+        flushList();
+        htmlParts.push('<p class="aiw-h1">' + inlineFormat(m[1]) + "</p>");
+        continue;
+      }
+
+      // Bullet list items: -, *, •
+      if ((m = line.match(/^[-*•]\s+(.+)$/))) {
+        listBuffer.push("<li>" + inlineFormat(m[1]) + "</li>");
+        continue;
+      }
+
+      // Numbered list items: 1. text
+      if ((m = line.match(/^\d+[.)]\s+(.+)$/))) {
+        listBuffer.push("<li>" + inlineFormat(m[1]) + "</li>");
+        continue;
+      }
+
+      // Regular paragraph line
+      flushList();
+      htmlParts.push('<p class="aiw-para">' + inlineFormat(line) + "</p>");
+    }
+
+    flushList();
+    return htmlParts.join("");
   }
 
   function getTime() {
@@ -62,7 +135,11 @@
 
   // ── Styles ────────────────────────────────────────────
   const css = `
-    #aiw-wrap * { box-sizing:border-box; margin:0; padding:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
+    #aiw-wrap, #aiw-wrap * {
+      box-sizing: border-box;
+      font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    }
+    #aiw-wrap { margin: 0; padding: 0; }
 
     #aiw-bubble {
       position:fixed; ${POSITION==="left"?"left:24px;":"right:24px;"} bottom:24px;
@@ -72,9 +149,10 @@
       cursor:pointer; border:none; outline:none;
       display:flex; align-items:center; justify-content:center;
       z-index:999999; transition:transform .2s ease, box-shadow .2s ease;
+      padding: 0;
     }
     #aiw-bubble:hover { transform:scale(1.08); box-shadow:0 6px 28px ${hexToRgba(COLOR, 0.55)}; }
-    #aiw-bubble svg { width:26px; height:26px; fill:white; }
+    #aiw-bubble svg { width:26px; height:26px; fill:white; pointer-events:none; }
     #aiw-badge {
       position:absolute; top:-2px; right:-2px;
       width:14px; height:14px; background:#ff4757;
@@ -83,8 +161,8 @@
 
     #aiw-panel {
       position:fixed; ${POSITION==="left"?"left:24px;":"right:24px;"} bottom:92px;
-      width:370px; max-width:calc(100vw - 32px);
-      height:560px; max-height:calc(100vh - 120px);
+      width:380px; max-width:calc(100vw - 32px);
+      height:580px; max-height:calc(100vh - 120px);
       background:#fff; border-radius:20px;
       box-shadow:0 12px 48px rgba(0,0,0,.15), 0 2px 8px rgba(0,0,0,.08);
       display:flex; flex-direction:column; overflow:hidden;
@@ -103,52 +181,71 @@
       display:flex; align-items:center; justify-content:center; flex-shrink:0;
     }
     #aiw-hav svg { width:20px; height:20px; fill:white; }
-    #aiw-hinfo { flex:1; }
-    #aiw-htitle { color:white; font-size:15px; font-weight:600; line-height:1.2; }
+    #aiw-hinfo { flex:1; min-width: 0; }
+    #aiw-htitle {
+      color:white; font-size:15px; font-weight:600; line-height:1.2;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
     #aiw-hstatus { color:rgba(255,255,255,.8); font-size:12px; margin-top:2px; display:flex; align-items:center; gap:4px; }
-    #aiw-dot { width:7px; height:7px; border-radius:50%; background:#4ade80; display:inline-block; }
+    #aiw-dot { width:7px; height:7px; border-radius:50%; background:#4ade80; display:inline-block; flex-shrink: 0; }
     #aiw-xbtn {
       background:rgba(255,255,255,.2); border:none; border-radius:50%;
       width:30px; height:30px; cursor:pointer;
       display:flex; align-items:center; justify-content:center;
-      color:white; font-size:16px; transition:background .15s; flex-shrink:0;
+      color:white; font-size:16px; line-height: 1; transition:background .15s; flex-shrink:0;
+      padding: 0;
     }
     #aiw-xbtn:hover { background:rgba(255,255,255,.3); }
 
     #aiw-msgs {
-      flex:1; overflow-y:auto; overflow-x:hidden; padding:16px;
+      flex:1; overflow-y:auto; overflow-x: hidden; padding:16px;
       display:flex; flex-direction:column; gap:12px; scroll-behavior:smooth;
-      width:100%;
     }
     #aiw-msgs::-webkit-scrollbar { width:4px; }
     #aiw-msgs::-webkit-scrollbar-thumb { background:#e0e0e0; border-radius:4px; }
 
-    .aiw-msg { display:flex; flex-direction:column; max-width:85%; min-width:0; animation:aiw-fi .2s ease; }
+    .aiw-msg {
+      display:flex; flex-direction:column;
+      max-width:88%; min-width: 0;
+      animation:aiw-fi .2s ease;
+    }
     .aiw-bot  { align-self:flex-start; }
     .aiw-user { align-self:flex-end; }
 
+    /* ── THE FIX: bubble must clip/wrap its own content ── */
     .aiw-bub {
-      padding:10px 14px; border-radius:16px;
-      font-size:14px; line-height:1.55; color:#1a1a1a;
-      word-wrap:break-word;
-      overflow-wrap:break-word;
-      word-break:break-word;
-      white-space:pre-wrap;
-      min-width:0;
-      width:100%;
+      padding:10px 14px;
+      border-radius:16px;
+      font-size:14px;
+      line-height:1.55;
+      color:#1a1a1a;
+      max-width: 100%;
+      width: fit-content;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      white-space: normal;
+      box-sizing: border-box;
     }
     .aiw-bot  .aiw-bub { background:#f4f4f5; border-bottom-left-radius:4px; }
-    .aiw-user .aiw-bub { background:${COLOR}; color:white; border-bottom-right-radius:4px; }
+    .aiw-user .aiw-bub {
+      background:${COLOR}; color:white; border-bottom-right-radius:4px;
+      margin-left: auto;
+    }
+
     .aiw-time { font-size:11px; color:#aaa; margin-top:4px; padding:0 4px; }
     .aiw-bot  .aiw-time { align-self:flex-start; }
     .aiw-user .aiw-time { align-self:flex-end; }
 
-    .aiw-list { padding-left:18px; margin:6px 0; }
-    .aiw-list li { margin-bottom:4px; }
-    .aiw-para { margin-bottom:6px; }
-    .aiw-h1 { font-size:15px; font-weight:700; margin-bottom:6px; }
-    .aiw-h2 { font-size:14px; font-weight:700; margin-bottom:4px; }
-    .aiw-h3 { font-size:13px; font-weight:600; margin-bottom:4px; }
+    /* Content inside bubble */
+    .aiw-bub .aiw-list { padding-left:20px; margin:4px 0; }
+    .aiw-bub .aiw-list li { margin-bottom:4px; word-break: break-word; overflow-wrap: anywhere; }
+    .aiw-bub .aiw-para { margin: 0 0 6px 0; word-break: break-word; overflow-wrap: anywhere; }
+    .aiw-bub .aiw-para:last-child { margin-bottom: 0; }
+    .aiw-bub .aiw-h1 { font-size:15px; font-weight:700; margin: 4px 0 6px 0; }
+    .aiw-bub .aiw-h2 { font-size:14px; font-weight:700; margin: 4px 0 4px 0; }
+    .aiw-bub .aiw-h3 { font-size:13px; font-weight:600; margin: 4px 0 4px 0; }
+    .aiw-bub strong { font-weight: 700; }
+    .aiw-bub em { font-style: italic; }
 
     .aiw-typing {
       display:flex; align-items:center; gap:5px;
@@ -162,10 +259,11 @@
     .aiw-d:nth-child(2) { animation-delay:.2s; }
     .aiw-d:nth-child(3) { animation-delay:.4s; }
 
-    .aiw-cfm-btns { display:flex; gap:8px; margin-top:8px; }
+    .aiw-cfm-btns { display:flex; gap:8px; margin-top:8px; flex-wrap: wrap; }
     .aiw-cfm-btn {
       padding:7px 16px; border-radius:20px; border:none;
       font-size:13px; font-weight:500; cursor:pointer; transition:opacity .15s;
+      white-space: nowrap;
     }
     .aiw-cfm-btn:hover { opacity:.85; }
     .aiw-cfm-yes { background:${COLOR}; color:white; }
@@ -175,44 +273,35 @@
     #aiw-footer { padding:12px 14px; border-top:1px solid #f0f0f0; flex-shrink:0; }
     #aiw-irow   { display:flex; gap:8px; align-items:flex-end; }
     #aiw-input  {
-      flex:1; border:1.5px solid #e8e8e8; border-radius:22px;
+      flex:1; min-width: 0; border:1.5px solid #e8e8e8; border-radius:22px;
       padding:10px 16px; font-size:14px; outline:none; resize:none;
       max-height:100px; line-height:1.4; color:#1a1a1a; background:#fafafa;
       transition:border-color .15s; font-family:inherit;
-      overflow-y:hidden;
     }
-    #aiw-input::-webkit-scrollbar { display:none; }
-    #aiw-input { scrollbar-width:none; -ms-overflow-style:none; }
     #aiw-input:focus { border-color:${COLOR}; background:white; }
     #aiw-input::placeholder { color:#bbb; }
-
-    /* FIX: send button hidden by default, appears only when input has text */
     #aiw-send {
       width:40px; height:40px; border-radius:50%;
       background:${COLOR}; border:none; cursor:pointer;
       display:flex; align-items:center; justify-content:center;
-      flex-shrink:0;
-      opacity:0;
-      transform:scale(0.6);
-      pointer-events:none;
-      transition:opacity .2s ease, transform .2s ease;
+      flex-shrink:0; transition:opacity .15s, transform .15s;
+      padding: 0;
     }
-    #aiw-send.aiw-send-visible {
-      opacity:1;
-      transform:scale(1);
-      pointer-events:all;
-    }
-    #aiw-send:hover   { opacity:.88 !important; transform:scale(1.05) !important; }
-    #aiw-send:disabled { opacity:.45 !important; cursor:not-allowed; transform:scale(1) !important; }
-    #aiw-send svg { width:18px; height:18px; fill:white; }
+    #aiw-send:hover   { opacity:.88; transform:scale(1.05); }
+    #aiw-send:disabled { opacity:.45; cursor:not-allowed; transform:none; }
+    #aiw-send svg { width:18px; height:18px; fill:white; pointer-events: none; }
 
     #aiw-powered { text-align:center; font-size:11px; color:#ccc; margin-top:8px; }
 
     @keyframes aiw-b  { 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-5px)} }
     @keyframes aiw-fi { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
 
-    @media(max-width:420px) {
-      #aiw-panel { width:calc(100vw - 32px); ${POSITION==="left"?"left:16px;":"right:16px;"} }
+    @media(max-width:480px) {
+      #aiw-panel {
+        width: calc(100vw - 24px);
+        height: calc(100vh - 110px);
+        ${POSITION==="left"?"left:12px;":"right:12px;"}
+      }
     }
   `;
 
@@ -257,13 +346,13 @@
   document.body.appendChild(wrap);
 
   // ── Refs ──────────────────────────────────────────────
-  const bubble   = document.getElementById("aiw-bubble");
-  const panel    = document.getElementById("aiw-panel");
-  const xbtn     = document.getElementById("aiw-xbtn");
-  const msgsEl   = document.getElementById("aiw-msgs");
-  const inputEl  = document.getElementById("aiw-input");
-  const sendBtn  = document.getElementById("aiw-send");
-  const badge    = document.getElementById("aiw-badge");
+  const bubble  = document.getElementById("aiw-bubble");
+  const panel   = document.getElementById("aiw-panel");
+  const xbtn    = document.getElementById("aiw-xbtn");
+  const msgsEl  = document.getElementById("aiw-msgs");
+  const inputEl = document.getElementById("aiw-input");
+  const sendBtn = document.getElementById("aiw-send");
+  const badge   = document.getElementById("aiw-badge");
 
   // ── Open / Close ──────────────────────────────────────
   function openPanel() {
@@ -373,9 +462,7 @@
     if (!text || isTyping) return;
 
     addUser(text);
-    inputEl.value = "";
-    autoResize();
-    updateSendBtn(); // hide button after clearing input
+    inputEl.value = ""; autoResize();
 
     isTyping = true; setDisabled(true); showTyping();
 
@@ -408,17 +495,7 @@
     inputEl.style.height = Math.min(inputEl.scrollHeight, 100) + "px";
   }
 
-  // FIX: show/hide send button based on whether input has text
-  function updateSendBtn() {
-    const hasText = inputEl.value.trim().length > 0;
-    if (hasText) {
-      sendBtn.classList.add("aiw-send-visible");
-    } else {
-      sendBtn.classList.remove("aiw-send-visible");
-    }
-  }
-
-  inputEl.addEventListener("input", () => { autoResize(); updateSendBtn(); });
+  inputEl.addEventListener("input", autoResize);
   inputEl.addEventListener("keydown", e => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
